@@ -14,7 +14,7 @@
 #include <cstdint>
 
 namespace recomp::phonecall {
-enum Bits : unsigned {Up=1u,Ringing=2u,InCall=4u};
+enum Bits : unsigned {Up=1u,Ringing=2u,InCall=4u,Help=8u}; // v1601: Help = the game's help box is shown (a contextual touch D-pad)
 constexpr std::uint32_t joaat(const char* s) noexcept {
     std::uint32_t h=0;
     for(;*s;++s){unsigned char c=static_cast<unsigned char>(*s);if(c>='A' && c<='Z')c=static_cast<unsigned char>(c+32);
@@ -33,11 +33,15 @@ inline bool callActive(unsigned s) noexcept {return (s&(Ringing|InCall))!=0;}
 inline void setUp(bool up) noexcept {
     if(up)stateWord().fetch_or(Up,std::memory_order_relaxed);else stateWord().fetch_and(~unsigned(Up),std::memory_order_relaxed);
 }
+// v1601: bit 3, the game's help box (IS_HELP_MESSAGE_BEING_DISPLAYED's byte, hud_game_state.h), set by the renderer each present.
+inline void setHelp(bool help) noexcept {
+    if(help)stateWord().fetch_or(Help,std::memory_order_relaxed);else stateWord().fetch_and(~unsigned(Help),std::memory_order_relaxed);
+}
 // The poll's result: the call bits replaced (Up kept). Returns the previous call bits.
 inline unsigned setCall(bool ringing,bool inCall) noexcept {
     const unsigned want=(ringing?unsigned(Ringing):0u)|(inCall?unsigned(InCall):0u);
     unsigned cur=stateWord().load(std::memory_order_relaxed);
-    while(!stateWord().compare_exchange_weak(cur,(cur&Up)|want,std::memory_order_relaxed)){}
+    while(!stateWord().compare_exchange_weak(cur,(cur&(Up|Help))|want,std::memory_order_relaxed)){} // (v1601: Help kept too)
     return cur&(Ringing|InCall);
 }
 

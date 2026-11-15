@@ -79,10 +79,31 @@ class App(unittest.TestCase):
             self.build(bundle='no dots')
         for art in ('alert-restart.png', 'sound.m4a'):
             (self.files / art).write_bytes(b'x')
-            with self.subTest(art=art), self.assertRaisesRegex(SystemExit, 'art or sound'):
+            with self.subTest(art=art), self.assertRaisesRegex(SystemExit, 'art or sound|not the owner-approved file'):
                 self.build(out='C.app')
             (self.files / art).unlink()
         self.assertFalse((self.root / 'C.app').exists())
+
+    def test_owner_approved_art_ships_only_with_its_exact_bytes_at_the_top_level(self):
+        # the owner's decision 2026-11-06: the trainer icon, sound and alert screen ship; any other bytes or place stays refused
+        approved = {'trainer-icon.png': sha(b'icon'), 'trainer-open.m4a': sha(b'laugh'), 'alert-restart.png': sha(b'alert')}
+        with mock.patch.object(ios_app, 'OWNER_APPROVED', approved):
+            (self.files / 'trainer-icon.png').write_bytes(b'icon'); (self.files / 'trainer-open.m4a').write_bytes(b'laugh')
+            (self.files / 'alert-restart.png').write_bytes(b'alert')
+            self.build(out='D.app')
+            for n, b in (('trainer-icon.png', b'icon'), ('trainer-open.m4a', b'laugh'), ('alert-restart.png', b'alert')):
+                self.assertEqual((self.root / 'D.app' / n).read_bytes(), b)
+            (self.files / 'trainer-open.m4a').write_bytes(b'other laugh')
+            with self.assertRaisesRegex(SystemExit, 'not the owner-approved file'):
+                self.build(out='E.app')
+            (self.files / 'trainer-open.m4a').write_bytes(b'laugh')
+            (self.files / 'sub').mkdir(); (self.files / 'sub/trainer-icon.png').write_bytes(b'icon')
+            with self.assertRaisesRegex(SystemExit, 'art or sound'):
+                self.build(out='F.app')
+            (self.files / 'sub/trainer-icon.png').unlink(); (self.files / 'other.png').write_bytes(b'icon')
+            with self.assertRaisesRegex(SystemExit, 'art or sound'):
+                self.build(out='G.app')
+        self.assertFalse(any((self.root / n).exists() for n in ('E.app', 'F.app', 'G.app')))
 
 
 class Kit(unittest.TestCase):

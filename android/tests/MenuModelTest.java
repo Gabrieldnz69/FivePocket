@@ -236,7 +236,7 @@ public final class MenuModelTest {
             old.nav(DOWN, false);
             reachable++;
         }
-        eq(14, reachable, "twelve setting rows and the two action rows");
+        eq(15, reachable, "twelve setting rows and the two action rows, + the Performance preset row");
     }
 
     /** The settings the model would hand to a save, without disturbing the model under test (a fresh press of Start on a copy is not possible, so read the rows). */
@@ -398,12 +398,12 @@ public final class MenuModelTest {
 
     private static void pageJumps() {
         MenuModel model = open(everything(), Settings.defaults());
-        String[] forward = {spec(TRAFFIC).label, spec(INPUT).label, "Restore original", "Restore original"};
+        String[] forward = {spec(TRAFFIC).label, spec(INPUT).label, "Preset", "Restore original", "Restore original"};   // (Update 1: + the Performance group)
         for (String label : forward) {
             model.nav(NavInput.PAGE_NEXT, false);
             eq(label, model.rowLabel(model.focused()), "after R1");
         }
-        String[] backward = {spec(INPUT).label, spec(TRAFFIC).label, spec(CAP).label, spec(CAP).label};
+        String[] backward = {"Preset", spec(INPUT).label, spec(TRAFFIC).label, spec(CAP).label, spec(CAP).label};
         for (String label : backward) {
             model.nav(NavInput.PAGE_PREV, false);
             eq(label, model.rowLabel(model.focused()), "after L1");
@@ -553,6 +553,8 @@ public final class MenuModelTest {
         for (SettingSpec each : SettingsSchema.all()) {
             for (int value = each.min; value <= each.max; value += each.step) {
                 if (value == each.defaultValue) continue;
+                // (Update 1: the derived Performance preset row: Custom is never chosen directly, so with(key, Custom) holds another value)
+                if (Settings.defaults().with(each.key, value).get(each.key) != value) continue;
                 MenuModel old = open(Capabilities.of(new HashSet<String>(), true, false), Settings.defaults().with(each.key, value));
                 String line = old.rowSecondLine(row(old, each.key));
                 eq(true, line.contains(" - not in this game build; the game uses ") && line.length() <= 100, "the line fits (" + line.length() + "): " + line);

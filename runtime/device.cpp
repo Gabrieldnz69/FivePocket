@@ -30,6 +30,8 @@ extern "C" { std::atomic<unsigned> recomp_df_bias_float{0}; }
 #include "pipeline_cache_store.h"
 #include <chrono>
 #include <memory>
+#include <atomic>
+extern "C" { std::atomic<bool> recomp_depth_bounds_enabled{false}; } // v1073: the device offered and enabled depthBounds
 #ifndef RECOMP_PCACHE_DIR // where the cache file and its off switch live (host tests name their own directory)
 #define RECOMP_PCACHE_DIR RECOMP_APP_PATH("/private-trace")
 #endif
@@ -374,6 +376,7 @@ bool ProbeDevice::create(const ShaderRequirements& requirements,bool samplerAnis
     enabled.sampleRateShading = sampleRateShading;
     enabled.independentBlend = independentBlend;
     enabled.occlusionQueryPrecise = features_.occlusionQueryPrecise; // occlusion package
+    enabled.depthBounds = features_.depthBounds; // v1073 (lamp-cone sky skip, hs_sky_skip.h): enabled only when offered
     VkPhysicalDeviceDescriptorIndexingFeatures indexing{};
     indexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
     indexing.runtimeDescriptorArray = requirements.runtimeDescriptorArray;
@@ -486,6 +489,8 @@ bool ProbeDevice::create(const ShaderRequirements& requirements,bool samplerAnis
     samplerAnisotropyEnabled = enabled.samplerAnisotropy;
     sampleRateShadingEnabled = enabled.sampleRateShading;
     independentBlendEnabled = enabled.independentBlend;
+    recomp_depth_bounds_enabled.store(enabled.depthBounds == VK_TRUE, std::memory_order_release); // v1073
+    std::printf("VULKAN_DEPTH_BOUNDS supported=%u enabled=%u\n", features_.depthBounds, enabled.depthBounds);
     std::printf("VULKAN_MRT_POLICY independent_blend_enabled=%u\n",enabled.independentBlend);
     std::printf("VULKAN_SAMPLE_RATE_POLICY enabled=%u\n",enabled.sampleRateShading);
     std::printf("VULKAN_NATIVE_SAMPLER_POLICY anisotropy_enabled=%u max_anisotropy=%.9g\n",

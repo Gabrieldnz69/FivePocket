@@ -16,8 +16,11 @@ Paths are below the app's data root, parts of [A-Za-z0-9._-] never starting with
 app: the executable, Info.plist from the template with the player's bundle identifier, the version and the SDK fields of
 the Xcode that built the executable (DTSDKName, DTPlatformVersion, DTXcode...: the SDK label decides the iOS compatibility
 window, see the brief 2.4), the app files as they are (the menus' font and its licence) and the payload as
-payload/r/... + payload/manifest.txt. The app files never carry the game's art or the owner's own files: a file named in
-REFUSED is refused, and so is any audio or image file. --sdk-label SDK[:BUILD] (the Duo edition: iOS 27.1 so the app does
+payload/r/... + payload/manifest.txt. The app files carry no other art or sound: a file named in REFUSED is refused, and so
+is any audio or image file, except the files in OWNER_APPROVED, each only at the top level of the app files and only with
+exactly its recorded SHA-256 (the owner's decision 2026-11-06 for the online update, "we will use the image sound, and
+loading screen we have": the trainer icon, the trainer sound and the alert screen he approved, "games layout", the button glyph
+blacked out; local-analysis/public-repo/PUBLISH-DECISIONS.md, decision 25). --sdk-label SDK[:BUILD] (the Duo edition: iOS 27.1 so the app does
 not run in the compatibility window) relabels the executable's LC_BUILD_VERSION sdk with vtool (its minos kept) and sets
 DTSDKName and DTPlatformVersion to that SDK instead of the building Xcode's (as the Duo session's proven duo_relabel.py
 does), and DTSDKBuild and DTPlatformBuild when BUILD is given. --icon FILE.png (the project's own app icon, 1024x1024, opaque;
@@ -40,6 +43,13 @@ import sys
 from pathlib import Path
 
 REFUSED = ('alert-restart.png', 'trainer-icon.png', 'trainer-open.m4a')
+# The owner's decision 2026-11-06 (online update): exactly these bytes may ship in the app; any other bytes under these names,
+# or these files anywhere but the top level of the app files, stay refused.
+OWNER_APPROVED = {
+    'trainer-icon.png': '21db69ba8d8a8521dcd95a9dcc1441026c0d041c549ec8fee38e8069e07bc7eb',
+    'trainer-open.m4a': 'ac27aa7487f92bcaeb7bf52de920c724ccf51cbeaf8ccc13bf4b84ecffd3eb16',
+    'alert-restart.png': 'e7f40b2e6169f269dd2ebf31c24ff52da0810956681e33876cd4ab1f06f41db8',   # owner-approved final art (2266x1275)
+}
 MEDIA = ('.png', '.jpg', '.jpeg', '.gif', '.heic', '.m4a', '.mp3', '.wav', '.caf', '.aiff')
 BUNDLE_ID = re.compile(r'^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$')
 SWITCH = b'1'
@@ -154,6 +164,12 @@ def build_app(executable: Path, app_files: Path, payload: Path, bundle_id: str, 
         info = plistlib.load(f)
     extra = [p for p in sorted(app_files.rglob('*')) if p.is_file() and p.name != 'Info.plist']
     for p in extra:
+        if p.name in OWNER_APPROVED and p.parent == app_files:
+            got = hashlib.sha256(p.read_bytes()).hexdigest()
+            if got == OWNER_APPROVED[p.name]:
+                continue
+            raise SystemExit(f'refused: {p.name} is not the owner-approved file (sha256 {got[:16]}, approved '
+                             f'{OWNER_APPROVED[p.name][:16]})')
         if p.name in REFUSED or p.suffix.lower() in MEDIA:
             raise SystemExit(f'refused: {p.name} is art or sound, which the app files must not carry')
     name = info['CFBundleExecutable']

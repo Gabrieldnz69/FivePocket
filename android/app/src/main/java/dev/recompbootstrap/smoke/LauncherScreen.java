@@ -194,6 +194,7 @@ final class LauncherScreen implements Screen, UiKit.Listener {
         final String apkPath = host.activity().getApplicationInfo().sourceDir;
         final InstallState[] found = new InstallState[1];
         final ShipReady[] ship = new ShipReady[1];
+        final GpuSupport.Verdict[] gpu = new GpuSupport.Verdict[1];
         // Back from the game, the two-disc setup page or the first screen: this look reads the game code file and
         // the shader file whole again. Any other look answers that part from the last whole read (ShipVerify).
         final boolean wholeLook = menu.takeWholeLook();
@@ -204,9 +205,11 @@ final class LauncherScreen implements Screen, UiKit.Listener {
                 if (wholeLook) ShipVerify.again();
                 ship[0] = ShipReady.remembered(apkPath, filesDir, ShipVerify.WHY_MENU);
                 found[0] = InstallState.detect(filesDir, ship[0]);
+                gpu[0] = GpuCheck.verdict(filesDir);   // asked once per process (bug report 2026-11-07, Adreno 650)
             }
         }, new Runnable() {
             @Override public void run() {
+                menu.setGpu(gpu[0]);
                 if (ticket == detection) {
                     // The page of a build that carries its game code says what is missing in that rule's numbers.
                     menu.setInstall(found[0], ship[0].bundled() ? ship[0] : null);

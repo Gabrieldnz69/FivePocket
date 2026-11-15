@@ -28,6 +28,7 @@ import subprocess
 import shutil
 import stat
 import sys
+import sysconfig
 import tempfile
 import urllib.request
 import uuid
@@ -36,6 +37,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import disc_builder as db
 import host_support
+import checkout_refusal
 
 
 class Refusal(Exception):
@@ -47,8 +49,15 @@ def read_json(path):
 
 
 def host_id():
-    machine = platform.machine().lower()
-    machine = {'amd64': 'x86_64', 'aarch64': 'arm64'}.get(machine, machine)
+    # Windows: the CPU the running interpreter was built for (sysconfig: win-amd64 / win-arm64), not platform.machine(),
+    # which reports the OS's native CPU. The package's x64 Python on a Windows-on-ARM PC runs x64 code under emulation, so
+    # it is win32-x86_64 and takes the x64 release; a native ARM64 Python is win32-arm64. macOS and Linux are unchanged.
+    if sys.platform == 'win32':
+        build = sysconfig.get_platform()
+        machine = {'win-amd64': 'x86_64', 'win-arm64': 'arm64'}.get(build, build)
+    else:
+        machine = platform.machine().lower()
+        machine = {'amd64': 'x86_64', 'aarch64': 'arm64'}.get(machine, machine)
     return f'{sys.platform}-{machine}'
 
 
@@ -99,7 +108,41 @@ def load_release(path):
         raise Refusal('a target profile is not hash-bound in the release; obtain a corrected release')
     if 'profile' not in r:
         raise Refusal('no production profile; obtain the approved B1/B2 profile')
+    overlay_spec(r)
+    if r['host'] == 'win32-arm64' and 'compiler_overlay' not in r:
+        raise Refusal(NO_NATIVE_COMPILER)
     return r, root
+
+
+# Google publishes the NDK's Windows compiler programs for x64 only. On a Windows on ARM PC they run emulated, and the
+# emulation folds floating point differently (2026-11-10, a Snapdragon X2 laptop: x87 fcos one ulp off in FFmpeg's
+# tx_double.o), so the Windows on ARM release carries native ARM64 builds of the programs that compile (built from the
+# NDK clang's own source and patches) and lays them over the verified NDK (overlay_spec, fetch_compiler_overlay).
+NO_NATIVE_COMPILER = ("this Windows on ARM release carries no native compiler programs (compiler_overlay): the NDK's x64 "
+                      "compiler would run emulated and does not reproduce the release; obtain the Windows on ARM builder release")
+
+
+def overlay_spec(release):
+    """The release's native compiler programs: None when it names none, else the checked pins, each a file of the
+    package hash-bound in its inventory and the file below the NDK folder it replaces (each replaced once)."""
+    o = release.get('compiler_overlay')
+    if o is None:
+        return None
+    files = o.get('files') if isinstance(o, dict) else None
+    if not isinstance(files, list) or not files:
+        raise Refusal('native compiler overlay is not pinned; obtain a corrected release')
+    listed = {f.get('path'): f.get('sha256') for f in release.get('files', []) if isinstance(f, dict)}
+    replaced = set()
+    for rec in files:
+        if not isinstance(rec, dict) or not re.fullmatch('[0-9a-f]{64}', str(rec.get('sha256'))) or type(rec.get('size')) is not int or rec['size'] <= 0:
+            raise Refusal('native compiler overlay is not pinned; obtain a corrected release')
+        safe_name(rec.get('path')); key = str(safe_name(rec.get('replaces'))).casefold()
+        if listed.get(rec['path']) != rec['sha256']:
+            raise Refusal(f'native compiler program is not hash-bound in the release: {rec["path"]}; obtain a corrected release')
+        if key in replaced:
+            raise Refusal(f'native compiler overlay replaces {rec["replaces"]} twice; obtain a corrected release')
+        replaced.add(key)
+    return o
 
 
 def ndk_spec(release):
@@ -135,6 +178,89 @@ def existing_ndk(cache, n):
         if not p.is_file() or db.sha256_file(p) != digest:
             raise Refusal('compiler files changed; use a new cache and run builder fetch again')
     return target / n['directory']
+
+
+def compiler_view(cache, n, o):
+    """The cache folder of the NDK with the release's native programs laid over it: named by the NDK archive and the
+    programs, and as long as the NDK's own folder name, so that no path in it is deeper (Windows' 259-character limit)."""
+    text = json.dumps([n['sha256'], sorted((str(safe_name(r['replaces'])), r['sha256']) for r in o['files'])])
+    return cache / ('o-' + hashlib.sha256(text.encode()).hexdigest()[:14])
+
+
+def overlay_places(n, o):
+    """receipt name (below the NDK folder) -> pin, for every file the release replaces"""
+    return {f'{n["directory"]}/{safe_name(r["replaces"])}': r for r in o['files']}
+
+
+def fetch_compiler_overlay(release, root, cache):
+    """Lays the release's native compiler programs over the verified NDK, in a cache folder of its own (compiler_view):
+    every other file is a link to the NDK's own (a copy where the disk cannot link), each program a checked copy of the
+    package's. The NDK's folder is never written. Nothing to do for a release without native programs."""
+    o = overlay_spec(release)
+    if o is None:
+        return
+    n = ndk_spec(release)
+    existing_ndk(cache, n)
+    view = compiler_view(cache, n, o)
+    if view.exists():
+        existing_compiler(release, root, cache)
+        print('Native compiler programs already verified.'); return
+    own = cache / n['sha256'][:16]
+    receipt = read_json(own / 'installed.json')['files']
+    places = overlay_places(n, o)
+    for name, rec in places.items():
+        if name not in receipt:
+            raise Refusal(f'native compiler overlay replaces {rec["replaces"]}, which the compiler archive does not have; obtain a corrected release')
+    staged = cache / ('v-' + uuid.uuid4().hex[:8])
+    staged.mkdir()
+    files = {}
+    for name, digest in receipt.items():
+        dest = inside(staged, name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if name in places:
+            rec = places[name]
+            shutil.copyfile(inside(root, rec['path']), dest)
+            if dest.stat().st_size != rec['size'] or db.sha256_file(dest) != rec['sha256']:
+                raise Refusal(f'native compiler program changed: {rec["path"]}; re-extract the approved builder download')
+            if os.name != 'nt':
+                dest.chmod(0o755)
+            files[name] = rec['sha256']
+        else:
+            try:
+                os.link(inside(own, name), dest)
+            except OSError:
+                shutil.copy2(inside(own, name), dest)
+            files[name] = digest
+    db.write_atomic(staged / 'installed.json', json.dumps({'archive_sha256': n['sha256'], 'view': view.name, 'files': files}, sort_keys=True).encode())
+    os.replace(staged, view)
+    print(f'Native compiler programs laid over the compiler: {len(places)} programs, {view / n["directory"]}')
+
+
+def existing_compiler(release, root, cache):
+    """The compiler folder a build uses: the verified NDK, or for a release with native programs its compiler_view, every
+    file checked: each program against its pin, each other file the NDK's own (the same file, or the same bytes)."""
+    n = ndk_spec(release)
+    ndk = existing_ndk(cache, n)
+    o = overlay_spec(release)
+    if o is None:
+        return ndk
+    view = compiler_view(cache, n, o)
+    record = view / 'installed.json'
+    if not record.is_file():
+        raise Refusal('native compiler programs missing; run builder fetch again')
+    data, own = read_json(record), cache / n['sha256'][:16]
+    receipt = read_json(own / 'installed.json')['files']
+    places = overlay_places(n, o)
+    if data.get('archive_sha256') != n['sha256'] or data.get('view') != view.name or set(data.get('files', {})) != set(receipt):
+        raise Refusal('native compiler receipt differs; use a new cache and run builder fetch again')
+    for name, digest in data['files'].items():
+        p = inside(view, name)
+        want = places[name]['sha256'] if name in places else receipt[name]
+        if digest != want or not p.is_file():
+            raise Refusal('compiler files changed; use a new cache and run builder fetch again')
+        if (name in places or not os.path.samefile(p, inside(own, name))) and db.sha256_file(p) != want:
+            raise Refusal('compiler files changed; use a new cache and run builder fetch again')
+    return view / n['directory']
 
 
 def link_target(rel: PurePosixPath, link: str, directory: str) -> str:
@@ -245,7 +371,7 @@ def fetch(release, cache, accepted, archive=None, opener=None):
     print(f'Android SDK License Agreement and component notices: {n["license_url"]}')
     if not accepted:
         raise Refusal('licence not accepted; read those terms, then rerun fetch with --accept-ndk-license if you agree')
-    host_support.private_output(cache)
+    checkout_refusal.private_output(cache, 'cache folder')
     cache.mkdir(parents=True, exist_ok=True)
     target = cache / n['sha256'][:16]
     if target.exists():
@@ -261,7 +387,7 @@ def fetch(release, cache, accepted, archive=None, opener=None):
     try:
         with guard:
             guard.write(str(os.getpid()))
-        staged = cache / ('fetch-' + uuid.uuid4().hex)
+        staged = cache / ('f-' + uuid.uuid4().hex[:8])     # short: the NDK's members run 176 characters deep
         staged.mkdir()
         zip_path = staged / ('download.dmg' if n['url'].endswith('.dmg') else 'download.zip')
         # No request is opened until all release/consent/disk checks above passed.
@@ -275,7 +401,14 @@ def fetch(release, cache, accepted, archive=None, opener=None):
                 h.update(block); out.write(block)
         if total != n['size'] or h.hexdigest() != n['sha256']:
             raise Refusal('archive hash/size mismatch; nothing installed; obtain the pinned publisher archive')
-        extracted = staged / 'payload'; extracted.mkdir()
+        extracted = staged / 'p'
+        if zip_path.suffix == '.zip' and not long_paths_enabled():
+            with zipfile.ZipFile(zip_path) as z:
+                deepest = deepest_fetch_path((extracted.resolve(), target.resolve()), z.namelist())
+            if deepest > WINDOWS_MAX_PATH:
+                raise Refusal(f'the compiler would be unpacked {deepest} characters deep, past Windows\' {WINDOWS_MAX_PATH}-character '
+                              f'limit (long paths are off); move the cache to a shorter folder, e.g. C:\\FP, and run fetch again')
+        extracted.mkdir()
         inventory, links = {}, {}
         payload = dmg_payload if zip_path.suffix == '.dmg' else zip_payload
         expanded = payload(zip_path, extracted, n, inventory, links)
@@ -378,11 +511,11 @@ def fetch_dxc(release, root, cache, accepted, archive=None, opener=None):
         print('Shader compiler already verified.'); return
     if not accepted:
         raise Refusal('licence not accepted; read those terms, then rerun fetch with --accept-dxc-license if you agree')
-    host_support.private_output(cache)
+    checkout_refusal.private_output(cache, 'cache folder')
     cache.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(cache).free < d['size'] + sum(rec['size'] for rec in d['files']):
         raise Refusal('not enough disk for the shader compiler archive and its files; free space or choose --cache elsewhere')
-    staged = cache / ('fetch-dxc-' + uuid.uuid4().hex)
+    staged = cache / ('fd-' + uuid.uuid4().hex[:8])
     staged.mkdir()
     zip_path = staged / 'download.zip'
     # No request is opened until all release/consent/disk checks above passed.
@@ -421,15 +554,44 @@ def fetch_dxc(release, root, cache, accepted, archive=None, opener=None):
     print(f'Shader compiler installed and verified: {len(missing)} of {len(taken)} files put below {root}')
 
 
+WINDOWS_PATH_LIMIT = 80
+
+
+def windows_path_too_long(path):
+    return sys.platform == 'win32' and len(str(Path(path).resolve())) > WINDOWS_PATH_LIMIT
+
+
+WINDOWS_MAX_PATH = 259      # the longest path Windows takes without its long-path setting (MAX_PATH 260 with the terminator)
+
+
+def long_paths_enabled():
+    # Windows' LongPathsEnabled (off by default); the package's python.org interpreter is long-path aware when it is on.
+    if sys.platform != 'win32':
+        return True
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SYSTEM\CurrentControlSet\Control\FileSystem') as key:
+            return winreg.QueryValueEx(key, 'LongPathsEnabled')[0] == 1
+    except OSError:
+        return False
+
+
+def deepest_fetch_path(places, names):
+    # The longest path fetch writes: the archive's longest member below the deepest of the folders it goes into.
+    longest = max((len(n.rstrip('/')) for n in names), default=0)
+    return max(len(str(p)) for p in places) + 1 + longest
+
+
 def check_paths(work, cache):
     # Until the whole native toolchain has passed long-path tests, refuse early;
     # no administrator/policy changes are requested or made.
     if sys.platform == 'win32':
         for p in (work.resolve(), cache.resolve()):
-            if len(str(p)) > 80:
-                raise Refusal('Windows build/cache path exceeds 80 characters; choose a short user-owned folder such as C:\\b')
-    host_support.private_output(work)
-    host_support.private_output(cache)
+            if windows_path_too_long(p):
+                raise Refusal(f'Windows build/cache path exceeds {WINDOWS_PATH_LIMIT} characters: {p}; the build folder must lie inside '
+                              'the builder folder, so move the unpacked builder to a short folder such as C:\\FivePocket and run it from there')
+    checkout_refusal.private_output(work, 'work folder')
+    checkout_refusal.private_output(cache, 'cache folder')
 
 
 @contextlib.contextmanager
@@ -487,7 +649,17 @@ def profile_of(release, target):
     return release['profiles'][target]
 
 
+def emulated_x64_on_arm():
+    # An x64 interpreter on a Windows-on-ARM PC: the x64 Android toolchain runs emulated there, and its compile-time floating
+    # point differs (2026-11-10, a Snapdragon X2 laptop: clang folded cos(2*pi/10) in FFmpeg's tx_double.o one ulp off; no
+    # per-app emulation setting changed it), so the release's libraries are not reproduced. Refused before anything runs.
+    return sys.platform == 'win32' and host_id() == 'win32-x86_64' and platform.machine().lower() == 'arm64'
+
+
 def check(release, root, work, cache, target=None):
+    if emulated_x64_on_arm():
+        raise Refusal("Windows on ARM can't build a bit-identical release with the x64 Android toolchain (emulated floating point "
+                      "differs); use an x64 PC")
     check_paths(work, cache)
     estimate = release.get('estimates', {})
     need = estimate.get('min_free_bytes')
@@ -500,7 +672,7 @@ def check(release, root, work, cache, target=None):
     print(f'Disk required: {need} bytes. Build time ESTIMATE: {estimate.get("build_time", "UNKNOWN; B7 measurement pending")}.')
     if free < need:
         raise Refusal('not enough free disk; free space or choose another --work directory')
-    ndk = existing_ndk(cache, ndk_spec(release))
+    ndk = existing_compiler(release, root, cache)
     existing_dxc(release, root)
     profile = db.load_profile(inside(root, profile_of(release, target)))
     # Check every supported game's plan without pretending either disc was identified.
@@ -653,13 +825,194 @@ def sign_ipa(ipa: Path, identity: str, profile: Path | None, entitlements: Path 
     return 0
 
 
+# ---------------------------------------------------------------------------------------------------- guided mode
+# A double click (no words, at a terminal) or a disc image dropped onto the program (one absolute path that exists)
+# starts a guided run: it asks for the discs, the output folder and the licence answer, then runs the same commands a
+# player would type (fetch, check, build, verify), so every refusal reads the same. The command line is unchanged.
+
+def dropped_disc(argv):
+    """the one disc a player dropped onto the program (Windows passes its absolute path as the only word), else None"""
+    if len(argv) != 1 or not os.path.isabs(argv[0]):
+        return None
+    p = Path(argv[0])
+    return p if p.is_dir() or (p.is_file() and p.suffix.lower() == '.iso') else None
+
+
+def clean_path(text):
+    """a path as typed, pasted or dropped onto a terminal window: surrounding quotes taken off; on macOS and Linux the
+    backslash a terminal puts before a space or other special character when a file is dropped onto it, too"""
+    t = text.strip()
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in '"\'':
+        t = t[1:-1]
+    elif sys.platform != 'win32':
+        t = re.sub(r'\\(.)', r'\1', t)
+    return t
+
+
+def disc_role(path, games):
+    """'play' when the image holds the executable of a game the profile supports (its SHA-256, as the build identifies the
+    play disc), 'install' otherwise (the install disc may hold an executable of its own), None when unreadable"""
+    try:
+        disc = db.open_disc(Path(path))
+        for name in sorted({g.get('executable', 'default.xex') for g in games}):
+            if disc.size(name) is not None and db.disc_hash(disc, name)[0] in {g['executable_sha256'] for g in games}:
+                return 'play'
+        return 'install'
+    except Exception:  # noqa: BLE001 - an unreadable image is named by the build step, with its own refusal
+        return None
+
+
+def default_cache():
+    return Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.cache'))) / 'own-disc-builder'
+
+
+def guided(release_path, dropped=None, ask=input, wait_at_end=False, cache=None):
+    def say(text=''):
+        print(text, flush=True)
+
+    def finish(code):
+        if wait_at_end:                              # the launcher waits only after a double click, not after a drop
+            try:
+                ask('\nPress Enter to close this window.')
+            except EOFError:
+                pass
+        return code
+
+    def question(prompt):
+        try:
+            return ask(prompt)
+        except EOFError:
+            raise Refusal('no answer (input closed)')
+
+    cache = cache or default_cache()
+    try:
+        release, root = load_release(release_path)
+    except (Refusal, OSError, ValueError, KeyError) as error:
+        say(f'REFUSED: {error}. No automatic retry. Correct the input or use an intact release, then start again.')
+        return finish(2)
+    if windows_path_too_long(default_work(root)):   # unpacked deep (e.g. in Downloads): the stages build only inside the package
+        say(f'This folder lies too deep for the build on Windows (its build folder would be longer than {WINDOWS_PATH_LIMIT} characters):\n'
+            f'  {default_work(root)}\n'
+            'Move the whole unpacked folder (the one holding README.txt and the builder folder) to C:\\FivePocket, so that builder.exe\n'
+            'is C:\\FivePocket\\builder\\builder.exe, then start builder.exe again. Nothing was built.')
+        return finish(2)
+    profiles = release.get('profiles', {})
+    apps = [t for t in sorted(profiles) if t in APP_TARGETS]
+    names = {'ios': 'the iOS app (iPhone, iPad)', 'duo': 'the Duo app', 'thor': 'the Thor Edition code bundle',
+             'fold': 'the single-screen code bundle'}
+    say('FivePocket Builder: it makes ' + ('the iOS app' if apps else "the game's code bundle for the phone app") +
+        ' from your own two disc images.')
+    say('Steps: fetch the compilers once (their licences are shown first), check this computer, build (half an hour to a'
+        ' few hours)' + ('.' if apps else ', verify.'))
+    say('Nothing is installed; files stay in this folder and the compiler cache. Close this window at any time to stop.\n')
+    try:
+        target = None
+        if apps:
+            choices = sorted(profiles, key=lambda t: (TARGETS.index(t) if t in TARGETS else len(TARGETS), t))   # iOS first
+            for i, t in enumerate(choices, 1):
+                say(f'  {i}. {names.get(t, t)}')
+            while target is None:
+                answer = question(f'Which one? Type 1-{len(choices)} and press Enter: ').strip()
+                if answer.isdigit() and 1 <= int(answer) <= len(choices):
+                    target = choices[int(answer) - 1]
+        games = db.load_profile(inside(root, profile_of(release, target)))['games']
+        discs = {'play': None, 'install': None}
+        if dropped is not None:
+            role = disc_role(dropped, games) or 'play'
+            discs[role] = Path(dropped)
+            say(f'{"Disc 2 (Play)" if role == "play" else "Disc 1 (Install)"}: {dropped}')
+        labels = {'play': 'Disc 2 (Play)', 'install': 'Disc 1 (Install)'}
+        for role in ('play', 'install'):
+            while discs[role] is None:
+                text = clean_path(question(f'Drag the {labels[role]} image (.iso) onto this window, or type its path, then press Enter:\n> '))
+                if not text:
+                    continue
+                p = Path(text).expanduser()
+                if not (p.is_file() or p.is_dir()):
+                    say(f'  Not found: {p}. Try again.'); continue
+                seen = disc_role(p, games)
+                other = 'install' if role == 'play' else 'play'
+                if seen == other and discs[other] is None:
+                    say(f'  That is {labels[other]}: taken as {labels[other]}.')
+                    discs[other] = p; continue
+                if seen == other:
+                    say(f'  That image looks like {labels[other]}, not {labels[role]}. Try again.'); continue
+                discs[role] = p
+        work = default_work(root)
+        out_default = work / 'out'
+        while True:
+            text = clean_path(question(f'Output folder? Press Enter for {out_default}\n> '))
+            out = Path(text).expanduser() if text else out_default
+            try:
+                checkout_refusal.private_output(out.resolve(), 'output folder')
+                break
+            except checkout_refusal.CheckoutRefusal as error:
+                say(f'  REFUSED: {error}. Choose another folder.')
+        base = ['--release', str(release_path), '--cache', str(cache)]
+        target_word = ['--' + target] if target else []
+        fetched = True
+        try:
+            existing_compiler(release, root, cache.resolve())
+            existing_dxc(release, root)
+        except Refusal:
+            fetched = False
+        steps = []
+        if not fetched:
+            n, dxc = release['ndk'], release.get('dxc')
+            say('\nThe build needs these compilers, fetched once from their publishers:')
+            say(f'  Android NDK: {n["size"] / 1e6:.0f} MB from {n["url"]}\n    terms: {n["license_url"]}')
+            if dxc:
+                say(f'  DirectX Shader Compiler: {dxc["size"] / 1e6:.0f} MB from {dxc["url"]}\n    terms: {dxc["license_url"]}')
+            answer = ''
+            while answer not in ('y', 'yes', 'n', 'no'):
+                answer = question('Have you read these terms, and do you accept them and want to fetch now? (y/n) ').strip().lower()
+            if answer.startswith('n'):
+                say('Nothing was fetched and nothing was built. Start again when you are ready.')
+                return finish(1)
+            steps.append(('Fetching the compilers', ['fetch', '--accept-ndk-license'] + (['--accept-dxc-license'] if dxc else [])))
+        steps.append(('Checking this computer', ['check'] + target_word))
+        steps.append(('Building (half an hour to a few hours; an interrupted build goes on where it stopped when started again)',
+                      ['build'] + target_word + ['--play-disc', str(discs['play']), '--install-disc', str(discs['install']),
+                                                 '--out', str(out)]))
+    except (Refusal, db.BuilderError, OSError, ValueError, KeyError) as error:
+        say(f'REFUSED: {error}. Nothing was built.')
+        return finish(2)
+    for i, (title, words) in enumerate(steps, 1):
+        say(f'\n=== Step {i} of {len(steps) + (0 if target in APP_TARGETS else 1)}: {title} ===')
+        code = main(base + words)
+        if code != 0:
+            say(f'\nStopped at step {i}: the message above says why. Nothing after it was done.')
+            return finish(code)
+    made = sorted((p for p in out.glob('*') if p.suffix in ('.bundle', '.ipa')), key=lambda p: p.stat().st_mtime)
+    if not made:
+        say(f'\nThe build ended without a result in {out}.')
+        return finish(1)
+    result = made[-1]
+    if target in APP_TARGETS:
+        say(f'\nYour app is at {result}\nSign it with your own Apple ID and install it as the README says (builder sign).')
+        return finish(0)
+    say(f'\n=== Step {len(steps) + 1} of {len(steps) + 1}: Verifying the bundle ===')
+    code = main(base + ['verify', str(result)])
+    if code != 0:
+        say(f'\nStopped at the verify step: the message above says why.')
+        return finish(code)
+    say(f'\nYour package is at {result}\nCopy it to your phone as the app says.')
+    return finish(0)
+
+
 def main(argv=None):
-    if (sys.argv[1:] if argv is None else argv) == []:
+    words = sys.argv[1:] if argv is None else argv
+    interactive = sys.stdin is not None and sys.stdin.isatty() and sys.stdout.isatty()
+    if words == [] and interactive:                  # a double click (Windows launcher, macOS Terminal)
+        return guided(default_release())
+    if dropped_disc(words) is not None:              # a disc image dropped onto builder.exe: its launcher does not wait
+        return guided(default_release(), dropped_disc(words), wait_at_end=True)
+    if words == []:
         print(how_to(default_release()))
         return 0
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--release', type=Path, default=default_release())
-    ap.add_argument('--cache', type=Path, default=Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.cache'))) / 'own-disc-builder')
+    ap.add_argument('--cache', type=Path, default=default_cache())
     sub = ap.add_subparsers(dest='cmd', required=True)
     c = sub.add_parser('check'); c.add_argument('--work', type=Path)
     f = sub.add_parser('fetch'); f.add_argument('--accept-ndk-license', action='store_true'); f.add_argument('--archive', type=Path)
@@ -688,6 +1041,7 @@ def main(argv=None):
             check_paths(a.cache, a.cache)
             fetch(release, a.cache.resolve(), a.accept_ndk_license, a.archive)
             fetch_dxc(release, root, a.cache.resolve(), a.accept_dxc_license, a.dxc_archive)
+            fetch_compiler_overlay(release, root, a.cache.resolve())
         else:
             work = a.work or default_work(root)
             target = getattr(a, 'target', None)
@@ -717,6 +1071,9 @@ def main(argv=None):
                     say_bundle_id(bundle_id, target)
                 return code
         return 0
+    except checkout_refusal.CheckoutRefusal as error:  # (complete advice of its own: not the "intact release" tail below)
+        print(f'REFUSED: {error}. No automatic retry: run check again from the new folder.')
+        return 2
     except (Refusal, db.BuilderError, OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
         print(f'REFUSED: {error}. No automatic retry. Correct the input or use an intact release, then run check again.')
         return getattr(error, 'code', 2)

@@ -58,6 +58,12 @@ final class LauncherMenu {
     private boolean asking;
     /** The Play being prepared was the answer "yes" to that question. */
     private boolean accepted;
+    /** The question that stands (asking) is "your GPU isn't supported yet: try anyway?", not the unqualified one. */
+    private boolean askingGpu;
+    /** The player answered "try anyway" to the GPU question: it is not put again while this menu lives. */
+    private boolean gpuAccepted;
+    /** What the launcher's graphics check found (GpuCheck); UNKNOWN until it answered, and then nothing is asked. */
+    private GpuSupport.Verdict gpu = GpuSupport.UNKNOWN;
     /** "Check again" was chosen and its look at the files has not come back yet. */
     private boolean rechecking;
     private String controllerMessage;
@@ -137,6 +143,16 @@ final class LauncherMenu {
             setPlayMessage(null, false, null);
         }
         asking = false;
+        askingGpu = false;
+    }
+
+    /** The launcher's graphics check has answered (null counts as UNKNOWN). */
+    void setGpu(GpuSupport.Verdict verdict) {
+        gpu = verdict == null ? GpuSupport.UNKNOWN : verdict;
+    }
+
+    GpuSupport.Verdict gpu() {
+        return gpu;
     }
 
     /**
@@ -292,7 +308,8 @@ final class LauncherMenu {
         if (preparing || !enabled(focused)) {
             return Action.NONE;
         }
-        boolean answeredYes = asking;   // only read below when the confirmed item is Play
+        boolean answeredGpu = asking && askingGpu;
+        boolean answeredYes = asking && !askingGpu;   // only read below when the confirmed item is Play
         leavePlayItem();
         switch (focused) {
             case PRIMARY:
@@ -310,6 +327,15 @@ final class LauncherMenu {
                 }
                 if (gameRunning) {
                     setPlayMessage(ALREADY_RUNNING, false, null);
+                    return Action.NONE;
+                }
+                if (answeredGpu) {
+                    gpuAccepted = true;
+                } else if (gpu.refused() && !gpuAccepted) {
+                    // Nothing is prepared or created: the question first, and only a second Play tries anyway.
+                    asking = true;
+                    askingGpu = true;
+                    setPlayMessage(GpuSupport.beforeStartLine(), false, GpuSupport.beforeStartDetail(gpu));
                     return Action.NONE;
                 }
                 preparing = true;
@@ -389,7 +415,8 @@ final class LauncherMenu {
      * something a start needs is missing (the state line then says what).
      */
     void startOutcome(LaunchOutcome outcome) {
-        String text = outcome == null ? null : selfInstalling ? ShipAdvice.afterStart(outcome) : LaunchAdvice.afterStart(outcome);
+        String text = outcome == null ? null : GpuSupport.explains(gpu, outcome) ? GpuSupport.afterStart(gpu)
+                : selfInstalling ? ShipAdvice.afterStart(outcome) : LaunchAdvice.afterStart(outcome);
         if (text == null || preparing || asking || install == null || !install.ready()) {
             return;
         }

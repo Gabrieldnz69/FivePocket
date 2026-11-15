@@ -100,11 +100,14 @@ Downloads are on the [Releases page](https://github.com/marcm0de/FivePocket/rele
 1. Download the app and its Windows builder: `FivePocket-<version>-android.zip` with
    `FivePocket-Builder-<version>-windows-x64.zip`, or `FivePocket-Thor-Edition-<version>-android.zip` with
    `FivePocket-Thor-Edition-Builder-<version>-windows-x64.zip`. Check them against `SHA256SUMS`.
-2. Unpack the builder and, in a Command Prompt inside the download's builder folder (`cd builder`), run
-   `builder fetch --accept-ndk-license --accept-dxc-license` (the Android NDK from Google and Microsoft's shader
-   compiler from Microsoft), then `builder check`.
-3. Run `builder build --play-disc <Disc2.iso> --install-disc <Disc1.iso> --out <folder>`. It writes one
-   `.bundle` file. `builder verify <bundle>` checks it.
+2. Unpack the builder and move its folder to `C:\FivePocket` (so `builder.exe` is `C:\FivePocket\builder\builder.exe`;
+   Windows cannot build in deeper folders such as Downloads). Easiest: double-click `builder.exe` in the builder folder and answer its questions (or drop
+   a disc ISO onto it). It shows the terms of the Android NDK (Google) and the shader compiler (Microsoft) before
+   fetching them, then checks, builds and verifies, and says where the `.bundle` is.
+3. Or use the command line. Don't double-click for these: open a Command Prompt in the builder folder (click the
+   folder's address bar, type `cmd`, press Enter), then run `builder fetch --accept-ndk-license --accept-dxc-license`,
+   `builder check`, `builder build --play-disc "<Disc2.iso>" --install-disc "<Disc1.iso>"` and `builder verify <bundle>`.
+   The ISOs can be anywhere: give their full paths (in quotes if a path has spaces).
 4. Install the APK on the phone and copy the bundle and your game files to it as the app's first-run screen says.
    The app imports them into its own storage; you can delete the copies afterwards.
 

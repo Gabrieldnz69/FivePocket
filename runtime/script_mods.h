@@ -6,6 +6,8 @@
 //   mods/<device>/<file path>                                 a whole file replaced (e.g. a complete modified .rpf)
 // Nested archives are followed (script.rpf is an uncompressed entry of xbox360b.rpf). Only replacements: a mod for an entry that the
 // archive does not have is skipped. Enabled only by files/settings/mods.txt "scripts=on"; read once when the library starts.
+// Update 1 (Mods page): files/mods/<pack>/<device>/<guest path>, one folder per mod, switched off one by one in mods.txt (see "packs"
+// below); the older files/mods/<device>/... layout still works and is shown as one pack.
 //
 // How (host side only; the game's own archive code reads the result): the guest opens an archive through NtCreateFile; the library
 // hands it a patched VIEW of the file: the original bytes, the archive's entry table re-encrypted with the overridden entries pointing
@@ -358,6 +360,133 @@ inline bool parseEnabled(const char* text,std::size_t n) noexcept {
     }
     return on;
 }
+// ------------------------------------------------------------------------------------------ packs (Update 1, Mods page P5)
+// files/mods/<pack>/<device>/<guest path>: one folder per mod (a "pack"). A first-level folder named after a guest device (deviceName) is
+// the older layout and counts as one pack, "Loose files" (status name "*"). files/settings/mods.txt words (any order, whitespace
+// separated, read once at start): scripts=on|off (as before), disabled=<pack>|<pack> (names percent-encoded, see encodeName; several
+// disabled= words add up), safe=1 (this start with every mod off; the app removes the word once that start is over). Packs are applied
+// in byte order of their folder names, the loose files first; when two packs replace the same path, the first keeps it and the other
+// is counted as a conflict. Unknown words are ignored (an older library reads only scripts=, so the new words cost it nothing).
+
+// The guest devices the library's file bindings serve (trace_runner.cpp: "game:" from the disc's file sources, and the native
+// "update:", "cache:", "gamecache:" directories). A first-level folder with one of these names is the loose-files layout.
+inline bool deviceName(std::string_view lower) noexcept {
+    return lower=="game" || lower=="update" || lower=="cache" || lower=="gamecache";
+}
+// Percent-encoding used for every name in mods.txt and in the v2 status (pure ASCII out, so the status is safe for JNI's NewStringUTF):
+// A-Z a-z 0-9 . _ ~ stay, path=true also keeps '/' and '-', every other byte becomes %XX (upper-case hex). The Java side
+// (ModsWords.encode) is the same rule. A bare "*" is never an encoded name ('*' is always %2A), so it can stand for the loose files.
+inline std::string encodeName(std::string_view s,bool path=false) {
+    static const char hex[]="0123456789ABCDEF";std::string out;out.reserve(s.size());
+    for(const char ch:s){const auto c=static_cast<unsigned char>(ch);
+        if((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='.'||c=='_'||c=='~'||(path&&(c=='/'||c=='-')))out+=char(c);
+        else {out+='%';out+=hex[c>>4];out+=hex[c&15];}}
+    return out;
+}
+// The inverse for a pack name: nothing when malformed (a bad escape, a control byte, '|', or a result that is empty, ".", "..", or holds
+// '/' or NUL: such a name can never be a folder of files/mods).
+inline std::optional<std::string> decodeName(std::string_view s) {
+    std::string out;
+    const auto nib=[](char h)->int{return h>='0'&&h<='9'?h-'0':h>='A'&&h<='F'?h-'A'+10:h>='a'&&h<='f'?h-'a'+10:-1;};
+    for(std::size_t i=0;i<s.size();++i) {
+        const auto c=static_cast<unsigned char>(s[i]);
+        if(c=='%'){if(i+2>=s.size())return std::nullopt;
+            const int a=nib(s[i+1]),b=nib(s[i+2]);if(a<0||b<0)return std::nullopt;out+=char(a<<4|b);i+=2;continue;}
+        if(c<=0x20 || c==0x7F || c=='|')return std::nullopt;
+        out+=char(c);
+    }
+    if(out.empty() || out=="." || out==".." || out.find('/')!=std::string::npos || out.find('\0')!=std::string::npos)return std::nullopt;
+    return out;
+}
+struct Config {bool scripts=false,safe=false;std::vector<std::string> disabled;};
+// mods.txt -> its words. The word's key is compared in lower case; a pack name keeps its case (folder names are case-sensitive).
+inline Config parseConfig(const char* text,std::size_t n) {
+    Config c;std::size_t i=0;
+    const auto yes=[](std::string v){for(auto& ch:v)ch=char(std::tolower(static_cast<unsigned char>(ch)));return v=="on" || v=="1" || v=="true" || v=="yes";};
+    while(i<n) {
+        while(i<n && (text[i]==' ' || text[i]=='\n' || text[i]=='\r' || text[i]=='\t'))++i;
+        std::size_t j=i;while(j<n && text[j]!=' ' && text[j]!='\n' && text[j]!='\r' && text[j]!='\t')++j;
+        const std::string w(text+i,j-i);i=j;
+        const auto eq=w.find('=');if(eq==std::string::npos)continue;
+        std::string key=w.substr(0,eq);for(auto& ch:key)ch=char(std::tolower(static_cast<unsigned char>(ch)));
+        const std::string value=w.substr(eq+1);
+        if(key=="scripts")c.scripts=yes(value);
+        else if(key=="safe")c.safe=yes(value);
+        else if(key=="disabled") {
+            std::size_t p=0;
+            while(p<=value.size()){const auto bar=value.find('|',p);const auto part=value.substr(p,bar==std::string::npos?std::string::npos:bar-p);
+                if(const auto name=decodeName(part);name && std::find(c.disabled.begin(),c.disabled.end(),*name)==c.disabled.end())c.disabled.push_back(*name);
+                if(bar==std::string::npos)break;p=bar+1;}
+        }
+    }
+    return c;
+}
+struct Pack {std::string name;bool legacy=false,on=true;unsigned files=0,conflicts=0,refused=0;};
+struct Conflict {std::string key;std::size_t loser=0,winner=0;};
+// Every pack of this start and the merged mods (key -> file), with the pack that supplied each key.
+struct Catalog {
+    std::vector<Pack> packs;std::map<std::string,File> mods;std::map<std::string,std::size_t> owner;std::vector<Conflict> conflicts;
+    // An accepted key that is an ancestor of `key` at a '/' boundary, or the first accepted key under `key/`; owner.end() if none.
+    std::map<std::string,std::size_t>::const_iterator overlapping(const std::string& key) const {
+        for(std::size_t slash=key.find('/');slash!=std::string::npos;slash=key.find('/',slash+1))
+            if(const auto up=owner.find(key.substr(0,slash));up!=owner.end())return up;
+        const std::string below=key+"/";
+        if(const auto down=owner.lower_bound(below);down!=owner.end() && down->first.compare(0,below.size(),below)==0)return down;
+        return owner.end();
+    }
+    // Adds one pack (call in apply order). A key that does not start with a guest device folder can never match a game path: refused.
+    void add(Pack p,const std::map<std::string,File>& files) {
+        const std::size_t index=packs.size();
+        if(p.on) for(const auto& [key,file]:files) {
+            const auto slash=key.find('/');
+            if(slash==std::string::npos || !deviceName(std::string_view(key).substr(0,slash))){++p.refused;continue;}
+            if(const auto known=owner.find(key);known!=owner.end()){++p.conflicts;conflicts.push_back({key,index,known->second});continue;}
+            // v957 (WAVE2 §2.1-5): a whole file and an entry inside it (one key a '/'-boundary prefix of the other) cannot both apply
+            // (the Layer gives the whole file and the entry would stay "pending" forever): the key added first keeps it, this one is
+            // a conflict with that key's pack. Also within one pack (map order: the whole file comes before its entries).
+            if(const auto over=overlapping(key);over!=owner.end()){++p.conflicts;conflicts.push_back({key,index,over->second});continue;}
+            mods.emplace(key,file);owner.emplace(key,index);++p.files;
+        }
+        packs.push_back(std::move(p));
+    }
+};
+// The v2 status text (recomp_mods_status_v2). Line 1 keeps v1's four words first (an app that parses v1 reads it unchanged) and adds
+// v=2 and the pack totals. Then one line per pack, then one line per mod outcome and conflict. Every name and detail is encodeName'd.
+//   enabled=1 found=3 applied=1 skipped=1 v=2 safe=0 packs=2 on=2 conflicts=1 refused=0
+//   pack * on=1 files=1 applied=1 skipped=0 conflicts=0 pending=0 refused=0
+//   pack My%20Mod on=1 files=2 applied=0 skipped=1 conflicts=1 pending=1 refused=0 reason=resource%20version%2010...
+//   applied * game/x.bin whole%20file%209%20bytes
+//   skipped My%20Mod game/xbox360b.rpf/a.xsc resource%20version...
+//   conflict My%20Mod game/x.bin *
+inline std::string statusV2(bool enabled,bool safe,const Catalog& c,const std::vector<Result>& results,unsigned refusedTop) {
+    struct Count {unsigned applied=0,skipped=0;std::string reason;};
+    std::vector<Count> per(c.packs.size());
+    unsigned applied=0,skipped=0,on=0,conflicts=unsigned(c.conflicts.size()),refused=refusedTop;
+    std::vector<std::string> lines;
+    for(const auto& r:results) {
+        (r.ok?applied:skipped)+=1;
+        const auto o=c.owner.find(r.key);
+        const std::string pack=o==c.owner.end()?std::string("?"):c.packs[o->second].legacy?std::string("*"):encodeName(c.packs[o->second].name);
+        if(o!=c.owner.end()){auto& k=per[o->second];(r.ok?k.applied:k.skipped)+=1;if(!r.ok && k.reason.empty())k.reason=r.detail;}
+        lines.push_back(std::string(r.ok?"applied ":"skipped ")+pack+" "+encodeName(r.key,true)+" "+encodeName(r.detail,true));
+    }
+    for(const auto& p:c.packs){on+=p.on?1u:0u;refused+=p.refused;}
+    std::string s="enabled="+std::to_string(enabled?1:0)+" found="+std::to_string(c.mods.size())+" applied="+std::to_string(applied)+
+        " skipped="+std::to_string(skipped)+" v=2 safe="+std::to_string(safe?1:0)+" packs="+std::to_string(c.packs.size())+" on="+
+        std::to_string(on)+" conflicts="+std::to_string(conflicts)+" refused="+std::to_string(refused)+"\n";
+    for(std::size_t i=0;i<c.packs.size();++i) {
+        const auto& p=c.packs[i];const auto& k=per[i];const unsigned done=k.applied+k.skipped;
+        s+="pack "+(p.legacy?std::string("*"):encodeName(p.name))+" on="+(p.on?"1":"0")+" files="+std::to_string(p.files)+" applied="+
+            std::to_string(k.applied)+" skipped="+std::to_string(k.skipped)+" conflicts="+std::to_string(p.conflicts)+" pending="+
+            std::to_string(p.files>done?p.files-done:0u)+" refused="+std::to_string(p.refused)+(k.reason.empty()?"":" reason="+encodeName(k.reason,true))+"\n";
+    }
+    for(const auto& l:lines)s+=l+"\n";
+    for(const auto& x:c.conflicts)
+        s+="conflict "+(c.packs[x.loser].legacy?std::string("*"):encodeName(c.packs[x.loser].name))+" "+encodeName(x.key,true)+" "+
+            (c.packs[x.winner].legacy?std::string("*"):encodeName(c.packs[x.winner].name))+"\n";
+    return s;
+}
+
 // "game:\xbox360b.rpf" -> "game/xbox360b.rpf" (a normalized guest path: lower case, backslashes; see normalizeGuestFilePath).
 inline std::string keyOf(std::string_view guest) {
     std::string k;k.reserve(guest.size());
@@ -373,7 +502,7 @@ public:
     using Opener=File(*)(const std::string& hostPath);
     Layer(LogFn log=nullptr) noexcept:log_(log) {}
     // The mods found (key = path under files/mods, lower case, '/'): set once at start, before any guest file is opened.
-    void setMods(std::map<std::string,File> mods) {mods_=std::move(mods);}
+    void setMods(std::map<std::string,File> mods) {std::lock_guard l(m_);mods_=std::move(mods);built_.clear();results_.clear();}   // (a new start forgets the last one's views and outcomes)
     void setKey(const std::uint8_t key[32]) {aes_.emplace(key);}
     bool active() const noexcept {return !mods_.empty();}
     // The file the guest gets for `guest` (normalized guest path), given the original (null = absent): the original when no mod

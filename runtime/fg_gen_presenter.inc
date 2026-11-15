@@ -497,10 +497,11 @@ private:
         const auto why=[&](fgg::Why w){return (unsigned long long)fgGenWhy[unsigned(w)];};
         const auto& kw=fgKeeper.window();
         RECOMP_DIRECT_LOG("RENDER_DIRECT_FG_GEN frames=%llu made=%llu kept_only=%llu nogen=no-frame:%llu,no-camera:%llu,orthonormal:%llu,lens:%llu,viewproj:%llu,no-depth:%llu,"
-            "depth-size:%llu,source:%llu,objects:%llu,cut:%llu,no-previous:%llu,tonemap-draws:%llu fg_us=%.0f fg_n=%llu fg_unread=%llu call_ms=%.3f state=%s trips=%u retry_in=%u fallbacks=%llu "
+            "depth-size:%llu,source:%llu,objects:%llu,cut:%llu,no-previous:%llu,tonemap-draws:%llu,cutscene:%llu fg_us=%.0f fg_n=%llu fg_unread=%llu call_ms=%.3f state=%s trips=%u retry_in=%u fallbacks=%llu "
             "window=made:%u,shown:%u,late:%u,lost:%u,interrupted:%u late_max=%u fail=%.1f audits=%llu failed=%u blind=%u",(unsigned long long)fgGenFrames,(unsigned long long)fgGenMadeN,
             (unsigned long long)fgGenKeepN,why(fgg::Why::NoFrame),why(fgg::Why::NoCamera),why(fgg::Why::Orthonormal),why(fgg::Why::Lens),why(fgg::Why::ViewProj),
             why(fgg::Why::NoDepth),why(fgg::Why::DepthSize),why(fgg::Why::Source),why(fgg::Why::Objects),why(fgg::Why::Cut),why(fgg::Why::NoPrevious),why(fgg::Why::TonemapDraws),
+            why(fgg::Why::Cutscene), // v1041
             fgGenTimeN?double(fgGenTimeNs)/1e3/double(fgGenTimeN):0.0,(unsigned long long)fgGenTimeN,(unsigned long long)fgGenTimeMissed,
             fgGenMadeN?double(fgGenCallNs)/1e6/double(fgGenMadeN):0.0,fgKeeper.final()?"off":fgKeeper.allows()?"run":"cool",fgKeeper.trips(),fgKeeper.cooldownLeft(),
             (unsigned long long)fgGenFallbacks,kw.made,kw.shown,kw.late,kw.lost,kw.interrupted,fgKeeper.lateMax(),double(fgTuneFail),(unsigned long long)fgGenAudits,unsigned(fgGenFailed),

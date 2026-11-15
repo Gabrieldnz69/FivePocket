@@ -70,6 +70,7 @@
 #endif
             const float gpu=fgg::tuned(fgGenText("diag-fg-gpu-max",text,sizeof text),float(fgg::K::GpuMaxLo),float(fgg::K::GpuMaxHi),GpuMaxDefault); // fg-gpu-max
             presenter.fgGenTune(fail,unsigned(late),fgGenAuditToken,gpu);
+            fgg::cutscenesRestored().store(fgGenHas("diag-fg-cutscenes"),std::memory_order_relaxed); // v1041
             if(!fgGenOn){fgGenEveryFrame();fgGenDepthKey=~0ull;fgGenDepthClock=writeClock;fgGenDepthMoves=0;fgGenTonemapBase=postfxDraws[0];}
             fgGenSeen=true;
         }
@@ -120,6 +121,24 @@
         const bool taken=fgGenCameraDraws && fgGenCameraInterval+1==presentCount;
         if(taken)in.cam=fgGenCamera;
         in.why=fgg::cameraVerdict(in.tonemapDraws,taken,fgGenCamera);
+        { // v1041: no made picture while a cutscene plays (fg_gen.h cutsceneVerdict; diag-fg-cutscenes restores)
+            const recomp::gpu::hud::GuestLease fgLease; // v1670: the read holds the guest-memory lease (no read after the space is released)
+            const auto* base=fgLease.base();
+            const recomp::touchctx::GuestMemory m{base};
+            const std::uint32_t mgr=base?m.u32(recomp::touchctx::CutsceneManager):0u;   // (v1670 audit: every load is behind base / valid)
+            const bool valid=recomp::touchctx::guestPointer(mgr);
+            const bool active=valid && m.u8(mgr+recomp::touchctx::CutsceneActive),playing=valid && m.u8(mgr+recomp::touchctx::CutscenePlaying);
+            const bool cutscene=fgg::cutscenePlaying(active,playing); // v723: PLAYING alone (v722: active || playing)
+            in.why=fgg::cutsceneVerdict(in.why,cutscene,fgg::cutscenesRestored().load(std::memory_order_relaxed));
+            { // v723: both bytes, one line per change (device evidence for the rule)
+                static int lastActive=-1,lastPlaying=-1;static unsigned changes=0;
+                if((int(active)!=lastActive || int(playing)!=lastPlaying) && changes<512) {
+                    ++changes;lastActive=int(active);lastPlaying=int(playing);
+                    GLOG("RENDER_DIRECT_FG_CUTSCENE active=%u playing=%u paused=%u present=%llu changes=%u",unsigned(active),unsigned(playing),
+                         unsigned(cutscene),(unsigned long long)presentCount,changes);
+                }
+            }
+        }
         // the scene depth, read as it is. Nothing here can see what a target HOLDS; what can be checked is checked (check c2):
         //   candidates  depth targets of pitch 1280, not scaled, that THIS frame drew into (a write stamp newer than the
         //               previous present's: a target the frame did not touch holds another frame's depth and is never handed);

@@ -93,6 +93,7 @@
 #include <utility>
 #include <vector>
 #include "recomp_app_dir.h" // data-paths: the app's files directory.
+#include "online_save_guard.h" // v967 (wave-3 S6): no save create/overwrite while an online character holds the saves
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -791,6 +792,7 @@ public:
                 return {win32::InvalidParameter, false};
             }
             if (record == nullptr && disposition != cd::OpenExisting) { return {win32::InvalidParameter, false}; }
+            if (::recomp::sandbox::onlineSaveWriteRefusedNow(disposition)) { return {::recomp::sandbox::ErrorAccessDenied, false}; } // v967 S6
             if (record != nullptr) {
                 const auto described = keyFromRecord(key.xuid, record);
                 if (!described || !sameContent(*described, key)) { return {win32::InvalidParameter, false}; }

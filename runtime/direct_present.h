@@ -1,4 +1,5 @@
 #pragma once
+#include "hud_game_state.h" // v1104: guestBase() (the loading card word) and lower_backdrop.h
 // Attempt v255 (goal step 5 prerequisite, "direct present"). Until v254 every displayed frame went GPU -> CPU -> GPU: the
 // renderer read the 1280x720 front buffer back (slot readback, opaqueRgbaInto), the presenter thread mapped it through
 // the scan-out (VulkanEngine::mapNativeScanout: identity scaler copy + the game's gamma ramp as three 256-entry tables),
@@ -56,6 +57,7 @@
 #include "diag_timeline.h" // v318 (the latency probe's present events)
 #include "lag_v337.h" // v337 (display lag histograms)
 #include "pace_caps.h" // pace-caps (lane A): diag-pace-* (the slot of a paced frame; display times for the vsync estimate)
+#include "app_away.h" // app-away (BUG 02 step 2): the game held still and silent while the app's window is gone
 #include "fg_pair.h" // frame-gen (lane B): diag-fg-pair-* (the pair logic of the frame-generation option, stage 1a)
 #include "fg_burst.h" // fg-burst (lane B, stage 1a): diag-fg-burst (the present-call and display times of the captured frames)
 #include "fg_gen.h" // framegen-1b: diag-fg-between (the generator of the frame-generation option: its decisions and its slot keeper)
@@ -100,6 +102,8 @@
 #endif
 struct ANativeWindow;
 #include "recomp_app_dir.h" // data-paths: the app's files directory.
+#include "present_robust.h" // present-robust (v1690): early VK_TIMEOUT absorbed, recoverable fence deadline, image count switch, minute line;
+                            // present-latch (v1691): one latch outcome (Presenter::latch: gpuOn false = the hand-off), held-image waits, test-only injection
 namespace recomp::gpu {
 bool probeSwapchainEnabled(VkDevice device); // device.cpp (v255)
 bool displayTimingEnabled(); // device.cpp (v318): VK_GOOGLE_display_timing enabled on the swapchain device
@@ -179,6 +183,7 @@ public:
             destroyAll();return false;
         }
         claimed=true;
+        robustArm(); // present-latch (v1691): the test-only switch diag-present-latch-inject (absent: nothing armed)
         // v259: vkQueuePresentKHR waits for the frame's GPU work on this driver (~4 ms per frame in v256, on the renderer's
         // worker and under the shared queue lock): it runs on its own thread and, when the family offers one, its own queue.
         presentQueue=probePresentQueue(dev->device);
@@ -216,7 +221,7 @@ public:
     void fgSwitches(unsigned bits) noexcept {fg.setSwitches(bits);}
     void setLut(const Lut& lut) {
         std::lock_guard l(m);
-        if(!claimed || released_ || !lutMapped)return;
+        if(!claimed || released_ || broken || !lutMapped)return; // (v1691: broken too - a latch's gpuOn false is never turned back on)
         for(unsigned i=0;i<768;++i)lutMapped[i]=lut[i];
         gameLut=lut;
         gpuOn.store(!gpuAuditFailed,std::memory_order_release);
@@ -229,7 +234,7 @@ public:
         if(!claimed || released_ || broken || !rgba || bytes!=SourceBytes || width!=SourceWidth || height!=SourceHeight)return false;
         if(!ensureCpuImage())return false;
         const unsigned k=cpuNext;cpuNext^=1;
-        if(stageSlot[k]>=0 && !waitAcquireSlot(unsigned(stageSlot[k])))return false;
+        if(stageSlot[k]>=0 && !waitAcquireSlot(unsigned(stageSlot[k]))){++cpuDropped;robustAfter(false);return false;} // (v1690: a dropped frame)
         std::memcpy(stageMapped[k],rgba,SourceBytes);
         const auto t0=std::chrono::steady_clock::now();
         const bool ok=presentLocked(dev->queue,cpuImage.view,cpuImage.image,true,[&](VkCommandBuffer cb) {
@@ -247,6 +252,13 @@ public:
         },&stageSlot[k]);
         cpuNs+=std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-t0).count());
         ++(ok?cpuPresents:cpuDropped);
+        robustAfter(ok); // present-robust (v1690): the drop streak and the minute line
+        {   // v1104 (owner: plain black on the lower screen during the loading cards; lower_backdrop.h part 2): stamp a card frame
+            namespace lb=::recomp::gpu::lower_backdrop;const ::recomp::gpu::hud::GuestLease cardLease;const auto* gb=cardLease.base(); // v1670: leased read
+            const bool card=ok && !lb::off() && gb && lb::cardShown(::recomp::gpu::hud::GuestMemory{gb}.u32(lb::CardWordAddr));   // (v1106 A/B switch)
+            if(card)lb::cardMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),std::memory_order_release);
+            if(card!=cardWas){cardWas=card;RECOMP_DIRECT_LOG("RENDER_DIRECT card-black=%u cpu_presents=%llu",unsigned(card),(unsigned long long)cpuPresents);}
+        }
         return ok;
     }
     // The renderer's present image (1280x720 RGBA8 UNORM, GENERAL layout, sampled usage), written by commands submitted
@@ -263,6 +275,7 @@ public:
         currentTag=0;
         gpuNs+=std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-t0).count());
         ++(ok?gpuPresents:gpuDropped);
+        robustAfter(ok); // present-robust (v1690)
         return ok;
     }
     void shutdown() {
@@ -280,6 +293,7 @@ public:
 private:
     struct Buffer {VkBuffer buffer=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;void* mapped=nullptr;VkDeviceSize size=0;};
     struct Img {VkImage image=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;VkImageView view=VK_NULL_HANDLE;};
+    bool cardWas=false; // v1104: the last CPU frame was a loading card (RENDER_DIRECT card-black)
     struct Acquire {VkSemaphore sem=VK_NULL_HANDLE;VkFence fence=VK_NULL_HANDLE;bool submitted=false;};
     static constexpr const char* Switches=RECOMP_APP_PATH("/private-trace/");
     static constexpr std::uint64_t AcquireTimeout=100'000'000ull,FenceTimeout=2'000'000'000ull;
@@ -562,8 +576,14 @@ private:
     bool waitAcquireSlot(unsigned k) {
         slotWatch.waitReleased(k); // latency-path (lat2): the watcher's vkWaitForFences on this slot has returned
         auto& a=acquires[k];
+        // present-latch (v1691): the test-only injection (diag-present-latch-inject) runs this wait's failure branch once
+        if(rob.inject.hit(rob.held?robust::Latch::ImageSlotWait:robust::Latch::Fence))return robustFenceRetry(k,robust::InjectedResult);
         if(!a.submitted)return true;
-        if(vkWaitForFences(dev->device,1,&a.fence,VK_TRUE,FenceTimeout)!=VK_SUCCESS){broken=true;RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=fence-wait");return false;}
+        // present-robust (v1690): an early VK_TIMEOUT waits on (robust::waitFences); a full deadline drops the frame (robustFenceRetry).
+        // present-latch (v1691): while an image is held (rob.held: after the acquire) a recoverable deadline waits again instead.
+        for(VkResult w;(w=robust::waitFences(vkWaitForFences,dev->device,1,&a.fence,VK_TRUE,FenceTimeout,"presenter-slot"))!=VK_SUCCESS;)
+            if(!robustFenceRetry(k,w))return false;
+        rob.deadlineRun=0;
         a.submitted=false;
         if(k<MaxTimed && slotTimed[k]) { // v409
             std::uint64_t t[2]{};
@@ -731,7 +751,7 @@ private:
         if(pr==VK_SUBOPTIMAL_KHR)++suboptimal; // (v256: expected every frame, see the acquire)
         else if(pr==VK_ERROR_OUT_OF_DATE_KHR){recreate=true;++outOfDate;}
         else if(pr==VK_ERROR_SURFACE_LOST_KHR){lost=true;++surfaceLost;}
-        else if(pr!=VK_SUCCESS){broken=true;gpuOn.store(false,std::memory_order_release);RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=present %d",int(pr));}
+        else if(pr!=VK_SUCCESS)latch(robust::Latch::Present,int(pr)); // (v1691: Presenter::latch, as every latch)
         return pr==VK_SUCCESS || pr==VK_SUBOPTIMAL_KHR;
     }
     void createScalePipeline() { // v411
@@ -1246,6 +1266,9 @@ private:
     void destroyAll() {
         if(!dev){if(nw && window.release){window.release(window.user,nw);nw=nullptr;}return;}
         waitAllMine();
+#ifdef RECOMP_THOR_EDITION
+        if(!stopPresenter)hud2::screen().handoff(dev->queue,presentQueue,presentQueue?&presentQueueMutex:nullptr); // v1740 (hud_handoff.h): a hand-off, not the run's end - the lower screen goes black, the HUD off
+#endif /* RECOMP_THOR_EDITION */
         destroySurfaceAndWindow();
         if(pipeline){vkDestroyPipeline(dev->device,pipeline,nullptr);pipeline=VK_NULL_HANDLE;}
         if(pass){vkDestroyRenderPass(dev->device,pass,nullptr);pass=VK_NULL_HANDLE;}
@@ -1394,7 +1417,8 @@ private:
             destroySurfaceAndWindow();
             std::uint64_t acquiredGen=0;
             nw=window.acquire(window.user,&acquiredGen);gen=acquiredGen;lost=false;
-            if(!nw)return false;
+            if(!nw){recomp_away::windowMissing(acquiredGen);return false;} // app-away: the app's window is gone (Home, another app)
+            recomp_away::windowFound();
             VkAndroidSurfaceCreateInfoKHR si{};si.sType=VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;si.window=nw;
             if(createSurface(dev->instance,&si,nullptr,&surface)!=VK_SUCCESS){surface=VK_NULL_HANDLE;RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT surface=failed");return false;}
             VkBool32 supported=VK_FALSE;
@@ -1444,7 +1468,8 @@ private:
         RECOMP_DIRECT_LOG("RENDER_DIRECT_HWC on=%u window=%ux%u buffer=%ux%u",unsigned(hwcWidth!=0),hwcWidth?hwcWindow.width:e.width,
             hwcWidth?hwcWindow.height:e.height,e.width,e.height);
         if(!layout(e.width,e.height))return false;
-        std::uint32_t count=caps.minImageCount+1;if(caps.maxImageCount)count=std::min(count,caps.maxImageCount);
+        const bool extraImages=robust::extraImagesWanted(); // present-robust (v1690, U4): diag-present-images-extra (default off: v1670's count)
+        std::uint32_t count=robust::imageCount(caps.minImageCount,caps.maxImageCount,extraImages);
         const bool transferSrc=(caps.supportedUsageFlags&VK_IMAGE_USAGE_TRANSFER_SRC_BIT)!=0;
         VkCompositeAlphaFlagBitsKHR alpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
         for(const auto a:{VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
@@ -1466,12 +1491,13 @@ private:
         paceRefresh(dev->device,swapchain); // pace-caps (lane A): the panel's refresh length, the vsync estimate's first guess (a read-only query)
         currentTransform=caps.currentTransform;
         // (from here a failure leaves a swapchain without its per-image objects: the presenter stops)
-        const auto fail=[&](const char* what){broken=true;gpuOn.store(false,std::memory_order_release);RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=%s",what);return false;};
+        const auto fail=[&](const char* what){return latch(robust::Latch::Swapchain,0,what);}; // (v1691: Presenter::latch, as every latch)
         if(!makePassAndPipeline())return fail("pipeline");
         n=0;
         if(swapchainImages(dev->device,swapchain,&n,nullptr)!=VK_SUCCESS || !n || n>16)return fail("images");
         images.resize(n);
         if(swapchainImages(dev->device,swapchain,&n,images.data())!=VK_SUCCESS)return fail("images");
+        robustImages(caps.minImageCount,caps.maxImageCount,count,n,extraImages); // present-robust (v1690): RENDER_DIRECT_PRESENT images=
         views.assign(n,VK_NULL_HANDLE);framebuffers.assign(n,VK_NULL_HANDLE);renderDone.assign(n,VK_NULL_HANDLE);imageSlot.assign(n,-1);
         for(std::uint32_t i=0;i<n;++i) {
             VkImageViewCreateInfo v{};v.sType=VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;v.image=images[i];v.viewType=VK_IMAGE_VIEW_TYPE_2D;
@@ -1759,7 +1785,8 @@ private:
         auto& a=acquires[k];
         std::uint32_t i=0;
         const auto t0=std::chrono::steady_clock::now();
-        const auto r=acquireImage(dev->device,swapchain,AcquireTimeout,a.sem,VK_NULL_HANDLE,&i);
+        // present-robust (v1690): acquireImage with early VK_TIMEOUT / VK_NOT_READY absorbed; present-latch (v1691): test-only injection
+        const auto r=rob.inject.hit(robust::Latch::Acquire)?robust::InjectedResult:robustAcquire(a.sem,&i);
         acquireNs+=std::uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-t0).count());
         if(r==VK_ERROR_OUT_OF_DATE_KHR){recreate=true;++outOfDate;return false;}
         if(r==VK_ERROR_SURFACE_LOST_KHR){lost=true;++surfaceLost;return false;}
@@ -1767,12 +1794,14 @@ private:
         // v256: SUBOPTIMAL is expected: the identity transform on a rotated panel (as the app presents) is suboptimal on
         // every frame (v255 recreated the swapchain per frame for it: ~6-10 ms per present). The extent is checked below.
         if(r==VK_SUBOPTIMAL_KHR)++suboptimal;
-        else if(r!=VK_SUCCESS){broken=true;RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=acquire %d",int(r));return false;}
-        if(i>=images.size()){broken=true;return false;}
+        else if(r!=VK_SUCCESS)return latch(robust::Latch::Acquire,int(r));
+        const robust::Held held(rob.held); // present-latch (v1691): an image is held until this function returns (present_robust.h (6))
+        if(i>=images.size() || rob.inject.hit(robust::Latch::ImageIndex))return latch(robust::Latch::ImageIndex,int(i));
         // (from here a failure leaves the acquire semaphore signaled: the presenter stops)
-        if(imageSlot[i]>=0 && !waitAcquireSlot(unsigned(imageSlot[i]))){broken=true;return false;}
+        // (v1691: waitAcquireSlot waits again on a recoverable deadline while the image is held: false = it latched image-slot-wait)
+        if(imageSlot[i]>=0 && !waitAcquireSlot(unsigned(imageSlot[i])))return false;
         VkDescriptorSet set=setFor(view); // (lane fsr-stage-b: not const, see `down`)
-        if(!set){broken=true;RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=descriptor");return false;}
+        if(!set || rob.inject.hit(robust::Latch::Descriptor))return latch(robust::Latch::Descriptor,0);
         pollFilter(); // v409
         const bool audit=auditable && !auditBlocked && wantAudit(identity); // (lane fsr-stage-b: auditBlocked, see auditRoom; false without a scale)
         if(audit)auditFilter=filter;
@@ -1948,13 +1977,14 @@ private:
             vkCmdPipelineBarrier(cb,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,0,1,&mb,0,nullptr,0,nullptr);
             ok=ok && vkEndCommandBuffer(cb)==VK_SUCCESS;
         }
+        if(rob.inject.hit(robust::Latch::Record))ok=false; // present-latch (v1691): test-only injection (the real branch below)
 #ifndef RECOMP_THOR_EDITION
-        if(!ok){broken=true;RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=record");return false;}
+        if(!ok)return latch(robust::Latch::Record,0);
         const VkPipelineStageFlags waitStage=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo si{};si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;si.waitSemaphoreCount=1;si.pWaitSemaphores=&a.sem;si.pWaitDstStageMask=&waitStage;
         si.commandBufferCount=1;si.pCommandBuffers=&cb;si.signalSemaphoreCount=1;si.pSignalSemaphores=&renderDone[i];
 #else /* RECOMP_THOR_EDITION */
-        if(!ok){broken=true;RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=record");if(hud.on)hud2::screen().submitted(hud,false,queue,VK_NULL_HANDLE,nullptr);return false;}
+        if(!ok){if(hud.on)hud2::screen().submitted(hud,false,queue,VK_NULL_HANDLE,nullptr);return latch(robust::Latch::Record,0);}
         // hud2 (v575): with a HUD image, the submit also waits for its acquire and signals its present semaphore (hud3 v585: the
         // acquire is waited at COLOR_ATTACHMENT_OUTPUT, where the HUD render pass first touches the image; v575 copied: TRANSFER)
         const VkPipelineStageFlags waitStages[2]{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -1964,11 +1994,11 @@ private:
 #endif /* RECOMP_THOR_EDITION */
         vkResetFences(dev->device,1,&a.fence);
         VkResult sr;
-        {GenericSubmissionScope generic;sr=lockedQueueSubmit(queue,1,&si,a.fence);} // (not a native ticket, see vulkan_queue_lock.h)
+        {GenericSubmissionScope generic;sr=rob.inject.hit(robust::Latch::Submit)?robust::InjectedResult:lockedQueueSubmit(queue,1,&si,a.fence);} // (not a native ticket, see vulkan_queue_lock.h; v1691: test-only injection)
 #ifdef RECOMP_THOR_EDITION
         if(hud.on)hud2::screen().submitted(hud,sr==VK_SUCCESS,queue,presentQueue?presentQueue:queue,presentQueue?&presentQueueMutex:nullptr); // hud2 (v575)
 #endif /* RECOMP_THOR_EDITION */
-        if(sr!=VK_SUCCESS){broken=true;RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=submit %d",int(sr));return false;}
+        if(sr!=VK_SUCCESS)return latch(robust::Latch::Submit,int(sr));
         a.submitted=true;imageSlot[i]=int(k);if(slotOut)*slotOut=int(k);
         if(timed){slotTimed[k]=std::uint8_t((one?rsb::OneSlot:passSlot(unsigned(filter),useCompute,fast,fsr))+1u);slotMid[k]=std::uint8_t(mid); // v409 (v412: passSlot; v42x: + fast, mid)
             slotFsrMid[k]=std::uint8_t(fsrMid);} // (v450: + fsr, EASU's end)
@@ -2300,6 +2330,61 @@ private:
     std::deque<std::uint32_t> fgHeldPresents,fgHeldTags;std::vector<int> fgHeldSlots;
     unsigned fgSetsSeen=0;std::uint64_t fgFrames=0,fgSetAllocs=0,fgPoolResets=0,fgMade=0,fgMadeNs=0,fgAcquireNs=0,fgStashDropped=0,fgInline=0;
 #include "fg_gen_presenter.inc" // framegen-1b: the generator (last: the members above keep v465's offsets)
+    // ---- present-robust (v1690, PLAN U3/U4; present_robust.h). Out of line: the hot paths keep their control flow.
+private:
+    robust::PresenterState rob; // (under m)
+    // A presenter fence wait that did not succeed. true: wait again (an image is held and the deadline is recoverable); false: the frame
+    // is dropped (no image held: the slot stays submitted) or the presenter latched. A full deadline (VK_TIMEOUT) is recoverable up to
+    // robust::DeadlineLatch in a row; a real error, the latch count or the kill switch latch (fence-wait, or image-slot-wait while held).
+    [[gnu::noinline]] bool robustFenceRetry(unsigned k,VkResult w) noexcept {
+        if(w==VK_TIMEOUT && !robust::slicingOff() && ++rob.deadlineRun<robust::DeadlineLatch) {
+            ++rob.fenceDeadline;
+            RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT fence-deadline slot=%u run=%u total=%llu (%s)",k,rob.deadlineRun,(unsigned long long)rob.fenceDeadline,
+                rob.held?"image held: waiting again":"frame dropped, slot kept");
+            return rob.held;
+        }
+        return latch(rob.held?robust::Latch::ImageSlotWait:robust::Latch::Fence,int(w));
+    }
+    // present-latch (v1691): every failure that stops the direct presenter ends here (present_robust.h (5)): one line, broken, gpuOn
+    // false. gpuOn false is the hand-off: the renderer's next frame is read back (generic_renderer.cpp `direct` reads gpuReady()) and
+    // reaches DirectDisplayBridge::consume, which gives the window to the app's renderer (handed_to_app=1). Returns false. Under m.
+    [[gnu::noinline]] bool latch(robust::Latch site,int result,const char* what=nullptr) noexcept {
+        const bool first=!broken;
+        broken=true;gpuOn.store(false,std::memory_order_release);
+        if(!first){++rob.lateLatches;return false;}
+        RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT broken=%s result=%d injected=%u gpu=0 handoff=next-frame gpu_presents=%llu cpu_presents=%llu drop_streak=%u",
+            what?what:robust::latchName(site),result,unsigned(rob.inject.fired==site),(unsigned long long)gpuPresents,(unsigned long long)cpuPresents,
+            rob.dropStreak);
+        return false;
+    }
+    // present-latch (v1691): the test-only latch injection, read once at the claim (present_robust.h (7)).
+    [[gnu::noinline]] void robustArm() noexcept {
+        char line[192]={};
+        (void)rob.inject.arm(robust::nowNs(),line,sizeof line);
+        if(line[0])RECOMP_DIRECT_LOG("%s",line);
+    }
+    [[gnu::noinline]] VkResult robustAcquire(VkSemaphore sem,std::uint32_t* index) {
+        return robust::waitSliced([&](std::uint64_t t){return acquireImage(dev->device,swapchain,t,sem,VK_NULL_HANDLE,index);},AcquireTimeout,
+            "presenter-acquire",robust::acquires());
+    }
+    [[gnu::noinline]] void robustImages(std::uint32_t minImages,std::uint32_t maxImages,std::uint32_t requested,std::uint32_t got,bool extra) noexcept {
+        rob.minImages=minImages;rob.images=got;
+        RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT images=%u requested=%u min=%u max=%u extra=%u",got,requested,minImages,maxImages,unsigned(extra));
+    }
+    // After each frame the presenter was given: the drop streak (logged at 30 / 300 / every 3000 frames) and the minute line.
+    [[gnu::noinline]] void robustAfter(bool shown) noexcept {
+        if(shown)rob.dropStreak=0;
+        else if(robust::streakLogged(++rob.dropStreak))
+            RECOMP_DIRECT_LOG("RENDER_DIRECT_PRESENT drop-streak=%u timeouts=%llu out_of_date=%llu surface_lost=%llu fence_deadline=%llu "
+                "acquire_early=%llu fence_early=%llu swapchain=%u images=%u broken=%u",rob.dropStreak,(unsigned long long)timeouts,
+                (unsigned long long)outOfDate,(unsigned long long)surfaceLost,(unsigned long long)rob.fenceDeadline,
+                (unsigned long long)robust::acquires().early.load(),(unsigned long long)robust::fences().early.load(),
+                unsigned(swapchain!=VK_NULL_HANDLE),rob.images,unsigned(broken));
+        robust::Totals t;t.presents=cpuPresents+gpuPresents;t.dropped=cpuDropped+gpuDropped;t.acquireTimeouts=timeouts;t.outOfDate=outOfDate;
+        t.surfaceLost=surfaceLost;t.recreated=recreated;t.fenceDeadline=rob.fenceDeadline;
+        char line[512];
+        if(rob.minute.due(robust::nowNs(),t,rob.images,rob.minImages,broken,rob.dropStreak,line,sizeof line))RECOMP_DIRECT_LOG("%s",line);
+    }
 };
 #else
 // Host builds (tests, the replay harness): no window, never claimed.

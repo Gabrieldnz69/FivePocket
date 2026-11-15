@@ -26,6 +26,8 @@ public:
     std::atomic<bool> loadingTint{false};
 private:
     std::atomic<bool> resumeOn{false},resumePressed{false},loadingOn{false};bool loadingMode=false;std::uint64_t loadingPasses=0;
+    bool cardBlack=false; // v1104: a loading card is up: the lower screen is plain black (resumeSnapshot)
+    bool spinWas=true; // v1106: the Loading spinner shown on the last frame (RENDER_LOADING spinner-follow)
     std::atomic<VkImageView> mirrorPublished{VK_NULL_HANDLE};std::atomic<std::uint64_t> mirrorSize{0}; // (the renderer thread writes them)
     VkImageView mirrorView=VK_NULL_HANDLE;std::uint32_t mirrorW=0,mirrorH=0; // (prepare()'s snapshot)
     bool resumeMode=false,resumeFailed=false,labelUploaded=false,resumeIsPressed=false;std::uint64_t resumePasses=0,resumeSerial=0;
@@ -38,8 +40,8 @@ private:
     static constexpr std::uint32_t ResumeTexW=std::max<std::uint32_t>(maptap::LabelTexW,maptap::IconPx),ResumeTexH=SaveTexRow+2*maptap::IconPx; // (v832: the floppy)
     // prepare(), under hm: this frame shows the Resume screen while the renderer says so and the mirror's source is known.
     void resumeFrame(std::uint64_t& key) noexcept {
-        resumeMode=!resumeFailed && !wheelMode && resumeOn.load(std::memory_order_relaxed) && mirrorView && mirrorW && mirrorH; // (mirror: snapshot in resumeSnapshot())
-        loadingMode=!resumeFailed && !wheelMode && !resumeMode && loadingOn.load(std::memory_order_relaxed) && mirrorView && mirrorW && mirrorH; // (thor-char v685)
+        resumeMode=!resumeFailed && !wheelMode && !cardBlack && resumeOn.load(std::memory_order_relaxed) && mirrorView && mirrorW && mirrorH; // (mirror: snapshot in resumeSnapshot(); v1104: never over a loading card)
+        loadingMode=!resumeFailed && !wheelMode && !resumeMode && !cardBlack && loadingOn.load(std::memory_order_relaxed) && mirrorView && mirrorW && mirrorH; // (thor-char v685; v1104)
         if(loadingMode)resumeMode=true; // (the same pass; resumeRecord draws the Loading pill)
         resumeIsPressed=!loadingMode && resumePressed.load(std::memory_order_relaxed);
         if(resumeMode)key=0x524553554D453637ull^(++resumeSerial<<1)^(resumeIsPressed?1u:0u); // (a new picture every frame: the mirror moves)
@@ -61,6 +63,13 @@ private:
     static constexpr unsigned ResumeAfterFrames=30;
     void resumeSnapshot() noexcept {
         mirrorView=mirrorPublished.load(std::memory_order_acquire);const auto sz=mirrorSize.load(std::memory_order_relaxed);mirrorW=std::uint32_t(sz>>32);mirrorH=std::uint32_t(sz);
+        {   // v1104 (owner: plain black during the loading cards; lower_backdrop.h part 2): a fresh card stamp from either present path
+            namespace lb=::recomp::gpu::lower_backdrop;
+            const std::int64_t now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            const bool card=lb::cardFresh(now,lb::cardMs.load(std::memory_order_acquire));
+            if(card!=cardBlack)RECOMP_HUD2_LOG("RENDER_MAPTAP card-black lower=%u",unsigned(card));
+            cardBlack=card;
+        }
     }
     bool resumeObjects() noexcept {
         if(labelView)return true;
@@ -143,10 +152,17 @@ private:
             resumeSetHandle=s;resumeSetLut=lutBuffer;resumeSetMirror=mirrorView;
         }
         labelUpload(cb);
-        list=loadingMode?loadingDrawList(float(extent.width),float(extent.height),float(mirrorW),float(mirrorH),
+        // v1106 (lower_backdrop.h part 3): in Online mode the Loading pill + spinner only on the frames the game's own busy spinner is on
+        bool spinNow=true;
+        if(loadingMode){namespace lb=::recomp::gpu::lower_backdrop;const hud::GuestLease spinLease;const std::uint8_t* gb=spinLease.base(); // v1670: leased read
+            const std::int64_t nowL=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            const bool game=(gb && hud::GuestMemory{gb}.u8(lb::SpinnerByteAddr)!=0) || lb::spinnerFresh(nowL,lb::spinnerMs.load(std::memory_order_acquire));   // v1109: + the renderer's loading-screen frames
+            spinNow=lb::off() || lb::lowerSpinner(lb::onlineMode.load(std::memory_order_relaxed),true,game);   // (v1106 A/B switch: v1101's Loading screen)
+            if(spinNow!=spinWas){spinWas=spinNow;RECOMP_HUD2_LOG("RENDER_LOADING spinner-follow lower=%u game=%u online=%u",unsigned(spinNow),unsigned(game),unsigned(lb::onlineMode.load(std::memory_order_relaxed)));}}
+        list=(loadingMode && spinNow)?loadingDrawList(float(extent.width),float(extent.height),float(mirrorW),float(mirrorH),
                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                 loadingTint.load(std::memory_order_relaxed)) // (thor-char v685; v693: the pause menu's tint)
-            :resumeDrawList(float(extent.width),float(extent.height),float(mirrorW),float(mirrorH),resumeIsPressed,resumePillOn.load(std::memory_order_relaxed));
+            :resumeDrawList(float(extent.width),float(extent.height),float(mirrorW),float(mirrorH),resumeIsPressed,!loadingMode && resumePillOn.load(std::memory_order_relaxed)); // (v1106: a Loading frame without the game's spinner: the backdrop alone)
         if(loadingMode && !(loadingPasses++%256))RECOMP_HUD2_LOG("RENDER_LOADING passes=%llu extent=%ux%u mirror=%ux%u",(unsigned long long)loadingPasses,extent.width,extent.height,mirrorW,mirrorH);
         useSet=resumeSetHandle;
         if(!(resumePasses++%256))RECOMP_HUD2_LOG("RENDER_MAPTAP resume passes=%llu extent=%ux%u mirror=%ux%u",(unsigned long long)resumePasses,

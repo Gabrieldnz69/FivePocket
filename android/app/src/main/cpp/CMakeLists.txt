@@ -74,6 +74,13 @@ set_target_properties(recomp_private_debug PROPERTIES CXX_VISIBILITY_PRESET hidd
 # lines (tag RecompPrivateTrace): LIBRARY_OPENED, LIBRARY_OPEN_REFUSED with the linker's reason, and
 # LIBRARY_ENTRY_MISSING. Only the ship build type turns it on (app/build.gradle.kts); the debug build's loader
 # stays the code every qualified session ran with (ship_checks.sh debug-apk compares it with the installed one).
+# The launcher's graphics check (GpuCheck.java; bug report 2026-11-07, Adreno 650): one read-only look at what Vulkan
+# device 0 reports for each thing the game's device gate asks. Loaded only by the launcher, never by the game window.
+add_library(fivepocket_gpu_check SHARED gpu_check_jni.cpp)
+target_compile_features(fivepocket_gpu_check PRIVATE cxx_std_17)
+target_compile_options(fivepocket_gpu_check PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(fivepocket_gpu_check PRIVATE "${android_log_library}" "${vulkan_library}")
+set_target_properties(fivepocket_gpu_check PROPERTIES CXX_VISIBILITY_PRESET hidden)
 option(RECOMP_LOADER_OPEN_LOG "The loader logs whether the game library opened, and the linker's reason when it did not" OFF)
 if(RECOMP_LOADER_OPEN_LOG)
     target_compile_definitions(recomp_private_debug PRIVATE RECOMP_LOADER_OPEN_LOG=1)

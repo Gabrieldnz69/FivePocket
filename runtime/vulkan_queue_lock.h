@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <atomic>
 #include <mutex>
+#include "present_robust.h" // present-robust (v1690): robust::waitFences
 
 namespace recomp::gpu {
 inline std::mutex& sharedQueueMutex() noexcept { static std::mutex m; return m; }
@@ -60,7 +61,7 @@ inline VkResult lockedQueueWaitIdle(VkDevice device, VkQueue queue) {
         result = vkQueueSubmit(queue, 0, nullptr, fence);
     }
     recomp::diag::timeline::mark(recomp::diag::timeline::GpuWaitBegin, 1); // v159: queue idle
-    if (result == VK_SUCCESS) result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (result == VK_SUCCESS) result = robust::waitFences(vkWaitForFences, device, 1, &fence, VK_TRUE, UINT64_MAX, "queue-idle"); // v1690: early VK_TIMEOUT waits on
     recomp::diag::timeline::mark(recomp::diag::timeline::GpuWaitEnd, 1);
     vkDestroyFence(device, fence, nullptr);
     return result;

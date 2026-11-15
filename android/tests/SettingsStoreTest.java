@@ -201,7 +201,7 @@ public final class SettingsStoreTest {
                             saves++;
                         }
                     }
-                    check(saves == 6 + 4 + 41 + 7 + 3 + 2 + 4 * 16 + 7 + 2, "the loop ran (" + saves + " saves)");
+                    check(saves == 6 + 4 + 41 + 7 + 3 + 2 + 4 * 16 + 7 + 2 + 4, "the loop ran (" + saves + " saves)");   // (+ 4: the Performance preset)
                     saved(files, defaults(), capabilities);
                     // All lanes: the listing is the one from before the walk. v458 differs in two documented ways:
                     // - the scaler was chosen through the two switch files, so they were removed and are now back as new

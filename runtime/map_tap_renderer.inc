@@ -9,9 +9,15 @@ std::uint64_t mapTapCopies=0,mapTapRestores=0;
 void mapTapPresentInner(const Image& shown,unsigned pw,unsigned ph) {
     namespace mt=recomp::gpu::maptap;
     const unsigned seen=mt::seenDrawn().exchange(0u,std::memory_order_relaxed);
+    const unsigned frameDraws=mt::drawsSeen().exchange(0u,std::memory_order_relaxed);   // v1109
     const bool tab=(seen&mt::SeenTab)!=0;
     const std::int64_t now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto f=mt::machine().present(now,seen);
+    {   // v1109: a loading-screen frame (its quad alone: the game's black + busy spinner) -> the lower spinner may show on this frame
+        namespace lb=recomp::gpu::lower_backdrop;const bool spin=!lb::off() && mt::loadingScreenFrame(seen,frameDraws);
+        if(spin)lb::spinnerMs.store(now,std::memory_order_release);
+        if(spin!=mapTapSpinWas){mapTapSpinWas=spin;GLOG("RENDER_MAPTAP loading-screen frame=%u draws=%u (the lower spinner %s)",unsigned(spin),frameDraws,spin?"on":"off");}
+    }
     if(f.ended) {
         const auto& s=f.summary;
         GLOG("RENDER_MAPTAP %s n=%llu mode=%s end=%s start_up_ms=%lld start_frames=%llu tab_ms=%lld release_ms=%lld tab_to_release=%llu last_release_ms=%lld "
@@ -23,11 +29,19 @@ void mapTapPresentInner(const Image& shown,unsigned pw,unsigned ph) {
     }
     // RC1.1: Resume on the game's pause state only (touch_context.h IS_PAUSE_MENU_ACTIVE, or the pause map the map tap opened); Loading
     // for a character switch (v685) and for death / arrest until the respawn has control (loading_layout.h RespawnState); a pause wins.
-    const auto* base=recomp::gpu::hud::guestBase().load(std::memory_order_acquire);
+    std::optional<recomp::gpu::hud::GuestLease> mapTapLease;mapTapLease.emplace(); // v1670: the guest reads below hold the lease
+    const auto* base=mapTapLease->base();                                         //  (released after mapTapLoading, before the Vulkan work)
+    {   // v1104 (lower_backdrop.h part 2): a loading card drawn by this path also turns the lower screen black
+        namespace lb=recomp::gpu::lower_backdrop;
+        const bool card=!lb::off() && base && lb::cardShown(recomp::gpu::hud::GuestMemory{base}.u32(lb::CardWordAddr));   // (v1106 A/B switch)
+        if(card)lb::cardMs.store(now,std::memory_order_release);
+        if(card!=mapTapCardWas){mapTapCardWas=card;GLOG("RENDER_MAPTAP card-black=%u (renderer present)",unsigned(card));}
+    }
     const int screens=base?recomp::touchctx::screens(recomp::touchctx::GuestMemory{base}):0;
     const bool pauseMenu=(screens&recomp::touchctx::Frontend)!=0,pauseMap=mt::machine().mapShown();
     mt::machine().setPauseMenu(pauseMenu); // (v811: a lower-screen tap acts only on the map)
     const auto pick=mapTapLoading(now,mt::pausedFrame(seen),base,(screens&recomp::touchctx::ControlOff)==0,pauseMenu,pauseMap);
+    mapTapLease.reset(); // v1670: no guest read after this line in this function
     mapTapResume(pick.resume,pick.pill,shown,pw,ph,f.hold); // v661 / v663 / v665: the lower screen's Resume Game (v811: the pill on the map only)
     if(!f.active){mapTapHeldValid=false;return;}
     if(mapTapFailed || !shown.image || census.active)return;
@@ -140,12 +154,19 @@ void mapTapResume(bool paused,bool pill,const Image&,unsigned,unsigned,bool) noe
 static constexpr unsigned MirrorLevels=9; // 640x360, 320x180, 160x90, 80x45, 40x22, 20x11, 10x5, 5x2 (and 1280x720 is the source)
 static constexpr unsigned MirrorResumeLast=5,MirrorHeavyLast=7,MirrorPauseLast=4; // (pause: 40x22, the game's own pause blur in its pause shots thor-edition/resume/main.png, own-main.png)
 std::array<Image,MirrorLevels> mapTapMirrorLevels{};bool mapTapMirrorFailed=false;std::uint64_t mapTapMirrorFrames=0;
+// v1103 (owner via the lead): during the Online creator the Resume look's source is the creator's backdrop only (lower_backdrop.h).
+bool mapTapBackdropWas=false;std::uint64_t mapTapBackdropFrames=0;
+bool mapTapCardWas=false;bool mapTapSpinWas=false; // v1109: the last present was a loading-screen frame // v1104: the card word read 5 at the last renderer present (lower_backdrop.h part 2)
 void mapTapMirror(const Image& shown,unsigned pw,unsigned ph) noexcept {
     if(!(mapTapResumeWas || mapTapLoadingWas || mapTapLoadingHold) || mapTapMirrorFailed || !shown.image || census.active || !pw || !ph)return; // (thor-char v685: + Loading)
     try {
         unsigned w[MirrorLevels],h[MirrorLevels];
         for(unsigned k=0;k<MirrorLevels-1;++k){w[k]=std::max(1u,pw>>(k+1));h[k]=std::max(1u,ph>>(k+1));}
-        const unsigned last=mapTapResumeWas?MirrorResumeLast:recomp::gpu::maptap::heavy(mapTapLoadingBg)?MirrorHeavyLast:MirrorPauseLast; // (v693)
+        namespace lb=recomp::gpu::lower_backdrop;
+        const bool backdrop=!lb::off() && lb::use(mapTapResumeWas,lb::creatorScreen.load(std::memory_order_relaxed)); // (v1103; v1106 A/B switch)
+        if(backdrop!=mapTapBackdropWas){mapTapBackdropWas=backdrop;GLOG("RENDER_MAPTAP backdrop=%u (the creator's left margin, %u tiles, blur to level %u) frames=%llu",
+            unsigned(backdrop),lb::Tiles,lb::BlurLast,(unsigned long long)mapTapBackdropFrames);}
+        const unsigned last=backdrop?(lb::CreatorBlur?lb::BlurLast:0u):mapTapResumeWas?MirrorResumeLast:recomp::gpu::maptap::heavy(mapTapLoadingBg)?MirrorHeavyLast:MirrorPauseLast; // (v693; v1103)
         for(unsigned k=0;k<=last;++k) {
             Image& im=mapTapMirrorLevels[k];
             if(!im.image || im.width!=w[k] || im.height!=h[k] || im.format!=shown.format) {
@@ -164,10 +185,20 @@ void mapTapMirror(const Image& shown,unsigned pw,unsigned ph) noexcept {
             vkCmdBlitImage(cmd,src,VK_IMAGE_LAYOUT_GENERAL,dst,VK_IMAGE_LAYOUT_GENERAL,1,&b,VK_FILTER_LINEAR);
             barrier();
         };
+        if(backdrop) {   // v1103: the strip, tiled (every second copy mirrored) over the 640x360 level; one blit command, Tiles regions
+            const auto t=lb::tiles(pw,ph,w[0],h[0]);VkImageBlit r[lb::Tiles]{};
+            for(unsigned k=0;k<lb::Tiles;++k){r[k].srcSubresource=r[k].dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+                r[k].srcOffsets[0]={t[k].src.x0,t[k].src.y0,0};r[k].srcOffsets[1]={t[k].src.x1,t[k].src.y1,1};
+                r[k].dstOffsets[0]={t[k].dst.x0,t[k].dst.y0,0};r[k].dstOffsets[1]={t[k].dst.x1,t[k].dst.y1,1};}
+            hazards({shown.image},{mapTapMirrorLevels[0].image});
+            vkCmdBlitImage(cmd,shown.image,VK_IMAGE_LAYOUT_GENERAL,mapTapMirrorLevels[0].image,VK_IMAGE_LAYOUT_GENERAL,lb::Tiles,r,VK_FILTER_LINEAR);
+            barrier();++mapTapBackdropFrames;
+        } else
         blit(shown.image,pw,ph,mapTapMirrorLevels[0].image,w[0],h[0]);                      // down: 1280 -> 640 -> ... -> the start level
         for(unsigned k=1;k<=last;++k)blit(mapTapMirrorLevels[k-1].image,w[k-1],h[k-1],mapTapMirrorLevels[k].image,w[k],h[k]);
         for(unsigned k=last;k>1;--k)blit(mapTapMirrorLevels[k].image,w[k],h[k],mapTapMirrorLevels[k-1].image,w[k-1],h[k-1]); // up: 20 -> 40 -> ... -> 320
         afterWrite();++mapTapMirrorFrames;
+        if(backdrop && !lb::CreatorBlur){recomp::gpu::hud2::screen().mirrorSource(mapTapMirrorLevels[0].view,w[0],h[0]);return;} // v1106: the tiles themselves (640x360), no blur
         recomp::gpu::hud2::screen().mirrorSource(mapTapMirrorLevels[1].view,w[1],h[1]); // (320x180: each up blit stretches over the whole next level)
     } catch(...) {}
 }

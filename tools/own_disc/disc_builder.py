@@ -64,6 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))      # the host helper lies beside this file
 import host_support  # noqa: E402
+import checkout_refusal  # noqa: E402
 
 TOOL_ROOT = host_support.package_root(__file__)
 PROFILE_SCHEMA = 'own-disc-pipeline/1'
@@ -467,8 +468,7 @@ def check_private_path(path: Path, what: str) -> None:
     for parent in [path, *path.parents]:
         if (parent / '.git').exists():
             if not path.is_relative_to(parent / PRIVATE_DIR):
-                raise BuilderError(f'{what} {path} is inside the git checkout {parent} but not under its '
-                                   f'{PRIVATE_DIR}/: refusing to write game-derived files there', EXIT_USAGE)
+                raise BuilderError(checkout_refusal.checkout_refusal_text(what, path, parent), EXIT_USAGE)
             return
 
 
@@ -1235,7 +1235,7 @@ def cmd_build(a) -> int:
         if not source.is_file():
             print(f'  {"output":<16} FAILED      the stage {output[1]} did not write {source.name}')
             return finish(EXIT_STAGE)
-        check_private_path(bundle_path, 'the output')
+        check_private_path(bundle_path, 'output')
         bundle_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = bundle_path.with_name(bundle_path.name + '.part')
         shutil.copyfile(source, tmp)

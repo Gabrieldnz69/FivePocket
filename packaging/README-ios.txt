@@ -43,6 +43,15 @@ A game controller works; without one, touch controls appear on screen.
 Re-signing (free Apple ID: every 7 days) or installing an update with the same bundle identifier replaces only the
 app: your imported game files and your saves stay on the device.
 
+NEW IN THIS UPDATE
+------------------
+- Sandbox: a choice on the Play tab next to Story Mode. It plays on its own copy of your story saves and never
+  changes them. Play Story Mode until your first save to unlock it.
+- Vibration (side menu > Settings > Controls): Off, Light or Full. On an iPad, only a connected controller
+  rumbles.
+- Rebuild the app with this version's Mac builder to get the new features. Re-sign with the same bundle identifier
+  so your imported files and saves stay.
+
 NEVER SHARE WHAT YOU BUILD
 --------------------------
 Never share, upload or sell: disc images, files copied from your discs, the .ipa the builder makes, the builder's

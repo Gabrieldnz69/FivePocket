@@ -25,6 +25,7 @@
 // cutscene, switch, fade, death). Physical input (the owner's pad or touch: noteHuman) clears the tasks and drops the command at
 // once. Every command, result and a status line about once a second are logged (RENDER_AUTOPILOT). Pure: the tests mock Natives.
 #include "trainer.h"
+#include "local_session_flag.h"   // v1047: the gate lets the L1 local session through, as trainer.h does
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -198,7 +199,7 @@ private:
     }
     static const char* gate(Natives& nat,std::uint32_t player,std::uint32_t ped) noexcept {
         if(!ped)return "no-ped";
-        if(call1(nat,tn::NetworkGame,{}))return "network-game";
+        if(call1(nat,tn::NetworkGame,{}) && !::recomp::local_session::active())return "network-game";   // v1047: except our local session (as trainer.h)
         if(!call1(nat,tn::IsPlayerPlaying,{player}))return "no-player";
         if(call1(nat,tn::IsPauseMenuActive,{}))return "pause-menu";
         if(call1(nat,tn::IsCutsceneActive,{}))return "cutscene";

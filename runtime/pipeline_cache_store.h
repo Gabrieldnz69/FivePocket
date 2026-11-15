@@ -39,6 +39,7 @@
 // delivery reported the two as one number, hold_ms).
 // Our own code; POSIX only. No Vulkan header is needed here: device.cpp hands in the driver call.
 #pragma once
+#include <cstdlib>
 #include "pipeline_cache_signal.h"
 #include <algorithm>
 #include <atomic>
@@ -556,6 +557,44 @@ private:
 #endif
     }
     // One driver call under the device's lock. waited: until the lock was ours (a creation had it). held: while it was ours.
+    // ONE hold (iOS 2026-11-06, the hand-off freeze: growth saves failed reason=incomplete because the size query and the copy took the
+    // device's lock separately, and while the saver waited for the second hold behind the warm-up's lock convoy the cache outgrew the
+    // buffer, three rounds in a row). Pipeline creation holds this same lock, so under one hold the cache cannot grow between the two
+    // driver calls. needed > room: nothing copied, *got = 0, the caller grows the buffer and asks again.
+    // If it outgrew the prepared room, the buffer is grown to the exact size UNDER the hold (a rare one-time allocation of a few
+    // milliseconds; refused above the cap) and copied in the same hold: the attempt cannot end "incomplete".
+    int bothUnderLock(std::size_t* needed, std::vector<std::uint8_t>& room, std::size_t* got, std::int64_t& held, std::int64_t& waited) {
+        const std::int64_t w0 = nowNs();
+        std::lock_guard lock(cacheMutex_);
+        const std::int64_t h0 = nowNs();
+        waited += h0 - w0;
+        int r = get_(needed, nullptr);
+        *got = 0;
+        if (r == 0 && *needed <= config_.cap) {
+            if (*needed > room.size()) room.resize(*needed);
+            *got = room.size(); r = get_(got, room.data());
+        }
+        held += nowNs() - h0;
+        return r;
+    }
+#if defined(RECOMP_PCACHE_TEST_HOOKS) // (as the iOS stage-c1 header: host test only)
+public:
+    static std::function<void()>& testBetweenHolds() {static std::function<void()> f;return f;}
+private:
+#endif
+    // Default on. Off: RECOMP_PCACHE_ONE_HOLD=0 (the iOS spelling, host tests) or, on Android, files/private-trace/diag-pcache-two-hold
+    // (read once, at the first save attempt; RECOMP_APP_PATH is defined by recomp_app_dir.h in device.cpp, the one includer).
+    static bool oneHoldOn() noexcept {
+        static const bool on = [] {
+            const char* e = std::getenv("RECOMP_PCACHE_ONE_HOLD");
+            if (e && e[0] == '0') return false;
+#if defined(RECOMP_APP_PATH) && !defined(RECOMP_PCACHE_HOST_TEST)
+            if (::access(RECOMP_APP_PATH("/private-trace/diag-pcache-two-hold"), F_OK) == 0) return false;
+#endif
+            return true;
+        }();
+        return on;
+    }
     int underLock(std::size_t* size, void* data, std::int64_t& held, std::int64_t& waited) {
         const std::int64_t w0 = nowNs();
 #if RECOMP_PCACHE_MUTANT != 24 // mutant 24: the driver is asked without the device's lock
@@ -576,9 +615,11 @@ private:
         std::size_t bytes = 0;
         SaveResult result;
         try {
+            std::size_t hint = 0; // (one-hold: the size seen under the lock last round, plus room; no second separate query)
             for (int round = 0; round < 3; ++round) {
                 std::size_t size = 0;
-                int r = underLock(&size, nullptr, held, waited);
+                int r = 0;
+                if (hint) size = hint; else r = underLock(&size, nullptr, held, waited);
                 bytes = size;
                 if (r != 0) { result.reason = Reason::QueryFailed; result.error = r; break; }
                 if (size == persisted_) { result.reason = Reason::Unchanged; break; }
@@ -592,7 +633,14 @@ private:
                 if (keep.owns_lock()) { const std::int64_t h0 = nowNs(); r = get_(&got, buffer_.data()); held += nowNs() - h0; }
                 else r = underLock(&got, buffer_.data(), held, waited);
 #else
-                r = underLock(&got, buffer_.data(), held, waited);
+#if defined(RECOMP_PCACHE_TEST_HOOKS) // host test only: the cache grows here, between the size query and the copy, in both orders
+                if (testBetweenHolds()) testBetweenHolds()();
+#endif
+                if (oneHoldOn()) { // (size and copy under one hold: it cannot grow in between; a bigger cache asks again with more room)
+                    std::size_t needed = 0;
+                    r = bothUnderLock(&needed, buffer_, &got, held, waited);
+                    if (r == 0 && got == 0) { bytes = needed; result.reason = Reason::OverCap; break; } // (grew past the cap under the hold)
+                } else r = underLock(&got, buffer_.data(), held, waited);
 #endif
 #if RECOMP_PCACHE_MUTANT == 26 // mutant 26: a cut-off copy is written as if it were the cache
                 if (r == 5) r = 0;

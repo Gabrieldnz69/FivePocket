@@ -61,7 +61,8 @@ public final class SettingsJsonTest {
                         "worldParkedCars|SLIDER|World|Parked cars|25..100 step 5|100",
                         "worldScenarioPedestrians|SLIDER|World|Scenario pedestrians|25..100 step 5|100",
                         "worldDrawDistance|SLIDER|World|Draw distance|70..100 step 5|100",
-                        "inputUnbuffered|TOGGLE|Controller|Low-delay stick input|0..1 step 1|0"};
+                        "inputUnbuffered|TOGGLE|Controller|Low-delay stick input|0..1 step 1|0",
+                        "performancePreset|CHOICE|Performance|Preset|custom,battery,adaptive,max|3"}; // Update 1: derived, never stored
                 ArrayList<String> actual = new ArrayList<String>();
                 for (SettingSpec spec : SettingsSchema.all()) {
                     String values = spec.kind == SettingSpec.Kind.CHOICE ? String.join(",", spec.choiceIds)
@@ -161,8 +162,9 @@ public final class SettingsJsonTest {
                 Settings b = Settings.defaults().with("fpsOverlay", 1).with("scaler", 2);
                 check(a.equals(b) && a.hashCode() == b.hashCode(), "the same values are equal, whatever the order of the changes");
                 check(a.with("scaler", 0).with("fpsOverlay", 0).isDefault(), "back at the defaults is the default");
-                same(Arrays.asList("scaler", "fpsOverlay"), a.changedKeys(Settings.defaults()), "changed keys in schema order");
-                same(Arrays.asList("scaler", "fpsOverlay"), Settings.defaults().changedKeys(b), "changedKeys is symmetric");
+                // (Update 1: a scaler other than FSR 1 matches no preset: the derived preset row reads Custom)
+                same(Arrays.asList("scaler", "fpsOverlay", "performancePreset"), a.changedKeys(Settings.defaults()), "changed keys in schema order");
+                same(Arrays.asList("scaler", "fpsOverlay", "performancePreset"), Settings.defaults().changedKeys(b), "changedKeys is symmetric");
                 same(new ArrayList<String>(), a.changedKeys(b), "no change");
                 same(Arrays.asList("frameCap", "worldDrawDistance"), a.changedKeys(a.with("worldDrawDistance", 70).with("frameCap", 5)), "first and last key");
             }
@@ -183,7 +185,7 @@ public final class SettingsJsonTest {
                         }
                     }
                 }
-                check(cases == 2 * (6 + 4 + 41 + 7 + 3 + 2 + 4 * 16 + 7 + 2), "the loop ran over every value (" + cases + " cases)");
+                check(cases == 2 * (6 + 4 + 41 + 7 + 3 + 2 + 4 * 16 + 7 + 2 + 4), "the loop ran over every value (" + cases + " cases)");   // (+ 4: the Performance preset)
             }
         });
 
@@ -244,6 +246,7 @@ public final class SettingsJsonTest {
         test("decode: a missing key is named in missing, without a warning; unknown keys are ignored and not written back", new SettingsCoreTestKit.Case() {
             @Override public void run() {
                 for (SettingSpec spec : SettingsSchema.all()) {
+                    if (spec.key.equals(SettingsSchema.PERFORMANCE_PRESET)) continue;   // (Update 1: derived, not in the file)
                     SettingsJson.Decoded decoded = SettingsJson.decode(changedWith(spec.key, null));
                     check(decoded.valid, spec.key + " missing: valid");
                     same(new ArrayList<String>(), decoded.warnings, spec.key + " missing: no warning (the row was grey when the file was saved)");

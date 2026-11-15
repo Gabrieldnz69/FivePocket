@@ -1,4 +1,4 @@
 {
-    global: recomp_run_private_trace_v1; recomp_run_private_trace_v2; recomp_run_private_trace_v3; recomp_run_private_trace_v4; recomp_run_private_trace_v5; recomp_run_private_trace_v6; recomp_set_hud_window_v1; recomp_trainer_v1; recomp_trainer_state_v1; recomp_trainer_status_v1; recomp_trainer_list_v1; recomp_trainer_marker; recomp_mods_status_v1; recomp_mods_marker; recomp_fps_v1; recomp_lower_buttons_v1; recomp_phone_state_v1;
+    global: recomp_run_private_trace_v1; recomp_run_private_trace_v2; recomp_run_private_trace_v3; recomp_run_private_trace_v4; recomp_run_private_trace_v5; recomp_run_private_trace_v6; recomp_touch_context_v1; recomp_set_hud_window_v1; recomp_trainer_v1; recomp_trainer_state_v1; recomp_trainer_status_v1; recomp_trainer_list_v1; recomp_trainer_marker; recomp_mods_status_v1; recomp_mods_status_v2; recomp_mods_marker; recomp_fps_v1; recomp_lower_buttons_v1; recomp_phone_state_v1; recomp_play_mode_v1; recomp_play_mode_online_v1; recomp_sandbox_state_v1; recomp_my_music_v1; recomp_my_music_state_v1; recomp_rumble_bind_v1; recomp_rumble_wait_v1; recomp_camera_turn_v1; recomp_aim_assist_v1; recomp_imenu_v1;
     local: *;
 };

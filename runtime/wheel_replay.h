@@ -333,6 +333,10 @@ inline bool charButtonRecent(std::int64_t nowMs) noexcept {const auto d=nowMs-ch
 inline bool weaponButtonRecent(std::int64_t nowMs) noexcept {const auto d=nowMs-weaponLbMs().load(std::memory_order_relaxed);return d>=0 && d<WeaponGraceMs;}
 #endif
 inline bool phoneUpRecent(std::int64_t nowMs) noexcept {const auto d=nowMs-phoneUpMs().load(std::memory_order_relaxed);return d>=0 && d<PhoneUpGraceMs;}
+// v1602 (android-qol): the single-screen observer's window - the phone's slide-up can take > 1 s before its screen first draws
+// (run-v1600-11110621: missed); observing only (nothing skipped), so a longer window costs a few frames' shader checks.
+constexpr std::int64_t PhoneUpGraceOneMs=3000;
+inline bool phoneUpRecentOne(std::int64_t nowMs) noexcept {const auto d=nowMs-phoneUpMs().load(std::memory_order_relaxed);return d>=0 && d<PhoneUpGraceOneMs;}
 struct CharCollector {
     unsigned n=0,active=0;bool taken=false,broken=false;
     std::uint64_t frames=0,ops=0,copies=0; // (cumulative: RENDER_CHAR)

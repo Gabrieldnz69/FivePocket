@@ -49,6 +49,11 @@ LOWER-SCREEN CONTROLS (in this build and covered by tests; not yet checked by to
 
 Saves live in the app's own storage and survive reinstalls of the same app (same bundle identifier).
 
+NEW IN THIS UPDATE
+------------------
+- Rebuild the app with this version's Mac builder. Re-sign with the same bundle identifier so your imported files
+  and saves stay.
+
 NEVER SHARE WHAT YOU BUILD
 --------------------------
 Never share, upload or sell: disc images, files copied from your discs, the .ipa the builder makes, the builder's

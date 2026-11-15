@@ -150,7 +150,7 @@ public final class CapabilityScanReportTest {
                 for (String line : report("v669", capabilities)) System.out.println(line);
                 same(sorted(SettingsCoreTestKit.V669_NAMES), capabilities.names(), "names found");
                 same(Arrays.asList("Frame rate cap", "Scaler", "FSR sharpness", "Render resolution", "Frame generation (experimental)", "Frame-rate counter", "Traffic",
-                        "Pedestrians", "Parked cars", "Scenario pedestrians", "Draw distance"), disabledRows(capabilities), "disabled rows");
+                        "Pedestrians", "Parked cars", "Scenario pedestrians", "Draw distance", "Preset"), disabledRows(capabilities), "disabled rows");   // (Update 1: + the preset)
             }
         });
 

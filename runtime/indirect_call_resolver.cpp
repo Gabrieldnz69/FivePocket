@@ -12,6 +12,8 @@
 #include "generic_texture_decode.h" // v613: tex::tiled2D (the water telemetry)
 #include "bot_vision_scan.h" // bot-vision (2026-10-03): RENDER_DIAG_NEAR, read-only entity pool scan
 #include "recomp_app_dir.h" // data-paths: the app's files directory.
+#include "stat_write_natives.h" // v1562: the stat write natives keep their probe (periodic_save.h counts them)
+#include "ammo_restore_diag.h" // v1565 (diagnostic, diag-ammo-restore): the weapon natives keep their probe while the switch is on
 #include "guest_execution_guard.h"
 #include "ppc_config.h"
 #include "ppc_context.h"
@@ -436,7 +438,8 @@ std::uint32_t beWord(const std::uint8_t* base,std::uint32_t a) {
 std::atomic<bool> probeTrim{true};
 bool probeNeeded(unsigned slot1) {
     const auto h=nativeProbe[slot1-1].hash.load(std::memory_order_relaxed);
-    return telemetry::wanted(h) || h==0xfa92e226u || h==0x1647f1cbu || h==0xa2826d17u;
+    return telemetry::wanted(h) || h==0xfa92e226u || h==0x1647f1cbu || h==0xa2826d17u || recomp::periodic_save::statWriteHash(h)   // v1562: the stat writes (periodic_save.h)
+        || recomp::ammo_diag::probed(h);   // v1565 (diagnostic, default off): the weapon natives (ammo_restore_diag.h)
 }
 inline unsigned activeProbe(std::size_t first) {
     const unsigned slot1=first<nativeSlotCount?nativeSlot[first].load(std::memory_order_acquire):0u;
@@ -565,6 +568,8 @@ namespace {
                     {context.r3.u32,context.r4.u32,context.r5.u32,context.r6.u32,
                      context.r7.u32,context.r11.u32,context.r26.u32,context.r31.u32}};
         }
+        __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_INDIRECT_UNMAPPED target=%08x lr=%08x r1=%08x r3=%08x r4=%08x r5=%08x r11=%08x r31=%08x",unsigned(guestTarget),unsigned(context.lr),context.r1.u32,context.r3.u32,context.r4.u32,context.r5.u32,context.r11.u32,context.r31.u32); // v1522-indirect 1: the unmapped target before the stop (the stop report goes to stdout, not collected on the Fold)
+        {char fr[200]{};std::size_t at=0;std::uint32_t sp=context.r1.u32;auto ld=[&](std::uint32_t x){std::uint32_t v;std::memcpy(&v,base+x,4);return __builtin_bswap32(v);};for(int i=0;i<10 && sp>=0x40000000u && sp<0x7FFFFFF0u && at+12<sizeof fr;++i){const std::uint32_t nx=ld(sp);if(nx<=sp || nx>=0x7FFFFFF0u)break;at+=std::snprintf(fr+at,sizeof fr-at,"%08x ",ld(nx-8));sp=nx;}__android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_INDIRECT_UNMAPPED frames=%s",fr);} // v1523-indirect 2: the guest back chain (saved LR at back-chain-8) before the stop
         recomp::bootstrap::GuestExecutionGuard::stopForInvalidIndirectTarget();
     }
     if(const unsigned probe=activeProbe(first)) { // v273

@@ -2,7 +2,7 @@
 
 The builder compiles these files, together with the code it translates from **your** discs, into the game library
 (the `.bundle` your device loads). They are this project's own code (GPL-3.0-or-later), copied byte for byte from the
-source folder release 1.1.0-alpha.1 (library v852) was compiled from. `ppc_context.h` is upstream XenonRecomp's header
+source folder release 1.1.5 (library v1740) was compiled from. `ppc_context.h` is upstream XenonRecomp's header
 (MIT, see `LICENSES/`) with this project's changes.
 
 Some files name the game's functions by address, size or script-function name, to say where the runtime hooks in.
@@ -26,6 +26,8 @@ The `spirv_*.h` and `cexec_overlay.h` files are C++ that edits the translated sh
 
 - Files the builder generates from your discs (the import bridge, guarded stops, call helpers and vertex-fetch index
   rules): they are made on your machine and never published.
+- Tables derived from the game's own files (`creator_hair_table.h`, `property_doors_table.inc`,
+  `generic_ocean_round_overrides.inc`): not published here.
 - AMD FidelityFX `ffx_a.h` and `ffx_fsr1.h`: use `third_party/fsr1/` (the same files).
 - `loading_label.h` and `map_tap_label.h` (text label bitmaps): held back until they are re-rendered with Nunito Sans;
   until then this folder alone does not build the library.

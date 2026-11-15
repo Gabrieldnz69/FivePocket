@@ -30,6 +30,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'own_disc'))
 import host_support
+import checkout_refusal
 
 ROOT = host_support.package_root(__file__)
 LOCAL = ROOT / 'local-analysis'
@@ -79,8 +80,8 @@ def main() -> int:
     work = a.work.absolute()
     if work.exists():
         raise SystemExit('work dir must be new; choose an unused directory')
-    host_support.private_output(work)
-    host_support.private_output(a.report)
+    checkout_refusal.private_output(work, 'work folder')
+    checkout_refusal.private_output(a.report, 'report file')
     work.mkdir(parents=True)
     (work / 'ppc').mkdir()
     cfg = work / 'recomp.toml'

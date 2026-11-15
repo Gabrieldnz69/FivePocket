@@ -59,6 +59,6 @@ inline BlendAttachment blendAttachment(std::uint32_t bc,unsigned writeMask) {
 }
 // The 32-bit float colour formats are the only ones colorFormat() produces whose blending Vulkan does not
 // require (R8G8B8A8_UNORM, A2B10G10R10_UNORM_PACK32, R16G16_SFLOAT, R16G16B16A16_SFLOAT must blend).
-inline bool blendSupportOptional(VkFormat f){return f==VK_FORMAT_R32_SFLOAT || f==VK_FORMAT_R32G32_SFLOAT;}
+inline bool blendSupportOptional(VkFormat f){return f==VK_FORMAT_R32_SFLOAT || f==VK_FORMAT_R32G32_SFLOAT || f==VK_FORMAT_R32G32B32A32_SFLOAT;} // (v1194: + RGBA32F, the exact k_16_16_16_16 key)
 
 } // namespace recomp::gpu::generic::state

@@ -28,7 +28,8 @@ public final class PublicPackageTest {
     static void nativeCode(Map<String,byte[]> files,File build) throws Exception {
         Set<String> names=new TreeSet<>();for(String n:files.keySet())if(n.startsWith("lib/"))names.add(n);
         expectEquals(new TreeSet<>(Arrays.asList("lib/arm64-v8a/librecomp_bootstrap.so","lib/arm64-v8a/librecomp_private_debug.so",
-                "lib/arm64-v8a/libc++_shared.so")),names,"only the freshly built loader, self-test and standard runtime");
+                "lib/arm64-v8a/libfivepocket_gpu_check.so","lib/arm64-v8a/libc++_shared.so")),names,
+                "only the freshly built loader, self-test, the launcher's graphics check and standard runtime");
         for(String n:names) {
             String base=n.substring(n.lastIndexOf('/')+1);
             // The reference is what this build compiled and packaged: native/<name> in the build folder. Gradle packages

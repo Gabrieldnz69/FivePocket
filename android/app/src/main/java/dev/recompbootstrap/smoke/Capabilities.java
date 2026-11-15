@@ -94,6 +94,7 @@ final class Capabilities {
         if (!spec.valid(value)) return REASON_NOT_A_VALUE;
         if (value == spec.defaultValue) return null;
         if (!libraryPresent) return REASON_NO_LIBRARY;
+        if (key.equals(SettingsSchema.PERFORMANCE_PRESET)) return PerformancePresets.reason(this, value);
         if (key.equals(SettingsSchema.FRAME_CAP)) {
             if (value == SettingsSchema.CAP_OFF) return REASON_NO_UNCAPPED;
             if (value == SettingsSchema.CAP_30) {
@@ -178,6 +179,8 @@ final class Capabilities {
      */
     boolean offered(String key, int value) {
         if (!valueSupported(key, value)) return false;
+        // (Custom is what the rows hold: shown, never a step of the preset row - the rows themselves change it)
+        if (key.equals(SettingsSchema.PERFORMANCE_PRESET) && value == PerformancePresets.CUSTOM) return false;
         return !(key.equals(SettingsSchema.RENDER_SCALE) && renderStageB() && !SettingsSchema.renderMode(value));
     }
 

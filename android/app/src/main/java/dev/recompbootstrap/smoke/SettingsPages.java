@@ -13,8 +13,8 @@ import java.util.List;
  * (counterNote).
  */
 final class SettingsPages {
-    static final int DISPLAY = 0, FRAME_RATE = 1, WORLD = 2, CONTROLS = 3, SAVE = 4, COUNT = 5;
-    static final String[] TITLES = {"Display", "Frame Rate", "World", "Controls", "Save And Restore"};
+    static final int DISPLAY = 0, FRAME_RATE = 1, WORLD = 2, CONTROLS = 3, PERFORMANCE = 4, SAVE = 5, COUNT = 6;
+    static final String[] TITLES = {"Display", "Frame Rate", "World", "Controls", "Performance", "Save And Restore"};
 
     /**
      * Which settings each category holds. Inside a category the rows stand in the settings schema's order. The rows
@@ -26,6 +26,7 @@ final class SettingsPages {
             {SettingsSchema.WORLD_TRAFFIC, SettingsSchema.WORLD_PEDESTRIANS, SettingsSchema.WORLD_PARKED_CARS,
                     SettingsSchema.WORLD_SCENARIO_PEDESTRIANS, SettingsSchema.WORLD_DRAW_DISTANCE},
             {SettingsSchema.INPUT_UNBUFFERED},
+            {SettingsSchema.PERFORMANCE_PRESET},
             {}};
 
     static final String LABEL_DRIFT = "Setting Files Differ";
@@ -63,6 +64,7 @@ final class SettingsPages {
             "How many frames the game shows each second, and whether generated pictures are added.",
             MenuModel.TEXT_WORLD_NOTE,
             "How controller input reaches the game.",
+            "One choice for the frame rate cap, render resolution, scaler and frame generation. " + PerformancePresets.TEXT_WORLD_KEPT,
             "Save writes your choices to the game's files. Restore Original puts every row back to the original game's value."};
 
     /** The remembered row (its place inside the category) per category. */
@@ -404,6 +406,7 @@ final class SettingsPages {
             case SettingsSchema.WORLD_SCENARIO_PEDESTRIANS: return SettingsSchema.hint(key, SettingsSchema.WORLD_DENSITY_MIN);
             case SettingsSchema.WORLD_DRAW_DISTANCE: return "How far away the game draws detailed objects.";
             case SettingsSchema.INPUT_UNBUFFERED: return "Passes stick movement to the game as soon as Android reports it.";
+            case SettingsSchema.PERFORMANCE_PRESET: return "Sets the frame rate cap, render resolution, scaler and frame generation together.";
             default: return SettingsSchema.spec(key).label + ".";
         }
     }

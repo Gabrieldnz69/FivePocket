@@ -1,4 +1,6 @@
 #pragma once
+#include "lower_backdrop.h" // v1104: the loading cards turn the lower screen black (resume_screen.inc)
+#include "hud_handoff.h" // v1740: the lower screen at a direct-present hand-off (one black picture, then off)
 // hud2 (2026-10-22, v575): the second screen's HUD. The app (debug source set: PrivateTraceActivity + SecondScreen.java) opens an
 // android.app.Presentation on a secondary display when files/settings/second-screen.txt says "hud", and hands its window to
 // the library through recomp_set_hud_window_v1 (private_trace_api.h; the same acquire / release / generation contract as V6's
@@ -190,8 +192,9 @@ public:
         if(serial!=seenSerial){seenSerial=serial;radar.age=0;}else if(radar.age<1000000u)++radar.age;
         radar.ever=serial!=0;
         {const std::uint32_t bits=radarScaleBits.load(std::memory_order_relaxed);std::memcpy(&radar.scale,&bits,4);if(!(radar.scale>0.0f))radar.scale=1.0f;}
-        const std::uint8_t* base=hud::guestBase().load(std::memory_order_acquire);
-        game=base?hud::readGameState(hud::GuestMemory{base}):hud::GameState{};
+        {const hud::GuestLease hudLease; // v1670: the read holds the guest-memory lease; released before the lock and the Vulkan work below
+         const std::uint8_t* base=hudLease.base();
+         game=base?hud::readGameState(hud::GuestMemory{base}):hud::GameState{};}
         {std::lock_guard rl(rm);rep=replica;} // hud4: the newest replica
         if(rep.serial!=seenReplica){seenReplica=rep.serial;replicaInfo.age=0;}else if(replicaInfo.age<1000000u)++replicaInfo.age;
         replicaInfo.ever=rep.serial!=0 && rep.view && rep.width && rep.height;
@@ -209,7 +212,8 @@ public:
         hudHidden=hud::hudHidden(settings,radar,replicaInfo); // v632: the game shows no HUD (cutscene, menu, load): a black lower screen
 #if defined(RECOMP_THOR_EDITION)
         resumeSnapshot();
-        resumeMode=!resumeFailed && resumeOn.load(std::memory_order_relaxed) && mirrorView && mirrorW && mirrorH; // (v667: for resumeLeave)
+        if(cardBlack)hudHidden=true; // v1104 (lower_backdrop.h part 2): plain black while a loading card is up
+        resumeMode=!resumeFailed && !cardBlack && resumeOn.load(std::memory_order_relaxed) && mirrorView && mirrorW && mirrorH; // (v667: for resumeLeave; v1104)
         resumeLeave(hudHidden); // thor-maptap (v667): the HUD at once after a pause screen
         if(!hudHidden && replicaMode)frameKey=hud::replicaKey(settings,game,replicaInfo,rep.serial); // (the key of what is shown now)
 #endif
@@ -354,7 +358,83 @@ public:
         cv.notify_all();
         if(thread.joinable())thread.join();
     }
+    // v1740 (hud_handoff.h): the direct presenter handed the main window to the app's renderer (Presenter::destroyAll, under its m, after
+    // its own passes were waited; never at the run's end). One black picture on the lower screen (the HUD pass's clear, no draws), then
+    // the HUD is off for the run - the lower screen as when the direct presenter is not used. queue: the presenter's device queue (this
+    // HUD's family); presentQueue / presentMutex: where and under which lock the HUD thread presents (null queue: `queue`).
+    [[gnu::noinline]] void handoff(VkQueue queue,VkQueue presentQueue,std::mutex* presentMutex) noexcept {
+        std::unique_lock l(hm);
+        const auto t0=std::chrono::steady_clock::now();
+        const std::uint64_t before=presented;
+        VkCommandPool cpool=VK_NULL_HANDLE;VkCommandBuffer cb=VK_NULL_HANDLE;bool fenceDone=false,sent=false;
+        struct Ops {
+            Screen& t;std::unique_lock<std::mutex>& l;VkQueue queue,presentQueue;std::mutex* presentMutex;VkCommandPool& cpool;VkCommandBuffer& cb;bool& fenceDone;bool& sent;
+            bool done() const noexcept {return t.handedOff;}
+            void markDone() noexcept {t.handedOff=true;}
+            bool hasSwapchain() const noexcept {return t.swapchain && t.dev && t.renderPass && t.framebuffers.size()==t.images.size() && !t.images.empty() && queue;}
+            bool waitIdle() noexcept {return t.cv.wait_for(l,std::chrono::milliseconds(3000),[&]{return t.pending.empty() && !t.busy;});}
+            bool acquire(std::uint32_t* j) noexcept {
+                if(t.spare.empty())return false;
+                const VkSemaphore s=t.spare.back();
+                const VkResult r=t.acquireImage(t.dev,t.swapchain,100'000'000ull,s,VK_NULL_HANDLE,j);
+                if((r!=VK_SUCCESS && r!=VK_SUBOPTIMAL_KHR) || *j>=t.images.size()){RECOMP_HUD2_LOG("RENDER_HUD2 handoff acquire=%d",int(r));return false;}
+                t.spare.pop_back();
+                if(t.imageAcquired[*j])t.spare.push_back(t.imageAcquired[*j]); // (as prepare(): its last wait finished)
+                t.imageAcquired[*j]=s;return true;
+            }
+            bool recordBlank(std::uint32_t j) noexcept {
+                VkCommandPoolCreateInfo pi{};pi.sType=VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;pi.flags=VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;pi.queueFamilyIndex=t.queueFamily;
+                if(vkCreateCommandPool(t.dev,&pi,nullptr,&cpool)!=VK_SUCCESS){cpool=VK_NULL_HANDLE;return false;}
+                VkCommandBufferAllocateInfo ai{};ai.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;ai.commandPool=cpool;ai.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;ai.commandBufferCount=1;
+                if(vkAllocateCommandBuffers(t.dev,&ai,&cb)!=VK_SUCCESS){cb=VK_NULL_HANDLE;return false;}
+                VkCommandBufferBeginInfo bi{};bi.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                if(vkBeginCommandBuffer(cb,&bi)!=VK_SUCCESS)return false;
+                const VkClearValue black{{{hud::Background.r,hud::Background.g,hud::Background.b,1.0f}}}; // (the HUD pass's own clear; hud_screen_layout.h)
+                VkRenderPassBeginInfo rb{};rb.sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;rb.renderPass=t.renderPass;rb.framebuffer=t.framebuffers[j];
+                rb.renderArea={{0,0},t.extent};rb.clearValueCount=1;rb.pClearValues=&black;
+                vkCmdBeginRenderPass(cb,&rb,VK_SUBPASS_CONTENTS_INLINE);vkCmdEndRenderPass(cb); // (UNDEFINED -> clear -> PRESENT_SRC)
+                return vkEndCommandBuffer(cb)==VK_SUCCESS;
+            }
+            bool submit(std::uint32_t j) noexcept {
+                const VkPipelineStageFlags st=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                VkSubmitInfo si{};si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;si.waitSemaphoreCount=1;si.pWaitSemaphores=&t.imageAcquired[j];si.pWaitDstStageMask=&st;
+                si.commandBufferCount=1;si.pCommandBuffers=&cb;si.signalSemaphoreCount=1;si.pSignalSemaphores=&t.done[j];
+                if(vkResetFences(t.dev,1,&t.fences[j])!=VK_SUCCESS)return false;
+                VkResult r;
+                {GenericSubmissionScope generic;r=lockedQueueSubmit(queue,1,&si,t.fences[j]);}
+                t.fenceOk[j]=r==VK_SUCCESS;t.timed[j]=false;sent=r==VK_SUCCESS;
+                if(r!=VK_SUCCESS)RECOMP_HUD2_LOG("RENDER_HUD2 handoff submit=%d",int(r));
+                return r==VK_SUCCESS;
+            }
+            bool waitFence(std::uint32_t j) noexcept {fenceDone=vkWaitForFences(t.dev,1,&t.fences[j],VK_TRUE,500'000'000ull)==VK_SUCCESS;return fenceDone;}
+            bool present(std::uint32_t j) noexcept {
+                VkPresentInfoKHR pi{};pi.sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;pi.waitSemaphoreCount=1;pi.pWaitSemaphores=&t.done[j];
+                pi.swapchainCount=1;pi.pSwapchains=&t.swapchain;pi.pImageIndices=&j;
+                const VkQueue q=presentQueue?presentQueue:queue;VkResult r;
+                if(presentMutex){std::lock_guard g(*presentMutex);r=t.queuePresent(q,&pi);}
+                else {std::lock_guard g(sharedQueueMutex());r=t.queuePresent(q,&pi);}
+                if(r==VK_SUCCESS || r==VK_SUBOPTIMAL_KHR){++t.presented;return true;}
+                RECOMP_HUD2_LOG("RENDER_HUD2 handoff present=%d",int(r));return false;
+            }
+            void stopDrawing() noexcept {
+                t.off.store(true,std::memory_order_relaxed); // wanted() false: no HUD frame, replay, radar capture; hud5Bottom / wheels back on the main picture
+                t.hideOn.store(false,std::memory_order_relaxed); // (v576: nothing hidden on the main picture without a live second screen)
+#if defined(RECOMP_THOR_EDITION)
+                t.wheelOn.store(false,std::memory_order_relaxed);t.radioOn.store(false,std::memory_order_relaxed);t.charOn.store(false,std::memory_order_relaxed);
+                t.phoneOn.store(false,std::memory_order_relaxed);t.textOn.store(false,std::memory_order_relaxed);
+                t.saveOn.store(false,std::memory_order_relaxed);t.saveOff(); // (v820: the pad machine no longer sees a Quick Save button)
+#endif
+            }
+        } ops{*this,l,queue,presentQueue,presentMutex,cpool,cb,fenceDone,sent};
+        const auto r=handoff::run(ops);
+        if(cpool && (fenceDone || !sent))vkDestroyCommandPool(dev,cpool,nullptr); // (a pass still in flight keeps its pool: one small leak, logged)
+        if(r.why==handoff::Why::Again)return;
+        const double ms=double(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-t0).count())/1e3;
+        RECOMP_HUD2_LOG("RENDER_HUD2 handoff blank=%u why=%s presented_before=%llu ms=%.1f pool_kept=%u off=1",unsigned(r.blanked),handoff::name(r.why),
+            (unsigned long long)before,ms,unsigned(cpool && sent && !fenceDone));
+    }
 private:
+    bool handedOff=false; // v1740: the hand-off ran (once per run)
     std::mutex hm;std::condition_variable cv;std::thread thread;std::deque<std::uint32_t> pending;bool busy=false,stop=false;
     std::atomic<bool> callbacks{false},off{false},hideOn{false}; // (v576: hideOn = hide=1 and a HUD swapchain)
     VkRenderPass hidePass=VK_NULL_HANDLE;VkFormat hideFormat=VK_FORMAT_UNDEFINED;std::uint64_t hidden=0;
@@ -801,6 +881,7 @@ public:
     Frame prepare(VkInstance,VkPhysicalDevice,VkDevice,std::uint32_t,VkBuffer,bool (*)(void*),void*) noexcept {return {};}
     void record(VkCommandBuffer,const Frame&) noexcept {}
     void submitted(const Frame&,bool,VkQueue,VkQueue,std::mutex*) noexcept {}
+    void handoff(VkQueue,VkQueue,std::mutex*) noexcept {} // v1740 (host: no second screen)
     bool hideWanted() const noexcept {return false;}
     void recordHide(VkCommandBuffer,VkFramebuffer,VkFormat,const direct::Layout&) noexcept {}
     void shutdown() noexcept {}

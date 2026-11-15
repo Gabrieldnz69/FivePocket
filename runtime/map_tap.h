@@ -142,6 +142,13 @@ constexpr std::int64_t PanMaxMs=3000;
 // the game's pause blur (ps 0ce70535f29e499b on the main surface: census 2026-10-24 c3 / c4, absent from game frames c1 / c2; the
 // weapon wheel's blur draws it too - the macro only looks right after its own START, with no wheel button held).
 constexpr unsigned SeenTab=1u,SeenFull=2u,SeenBlur=4u,SeenPost=8u;
+// v1109 (owner: the lower spinner on the frame the top shows it): the game's own loading-screen frames - black + its busy spinner, after the creator's
+// Go Online (and the boot cards) - are ONE full-screen quad with this pixel shader and nothing else (t-spincensus106b-20261108-1646: both censuses
+// taken while the top showed the spinner had exactly that draw: ps 4a5242663895a27d, sc 0,0,1280,720). A frame whose draws are only that quad
+// (LoadingQuadMaxDraws) is a loading-screen frame.
+constexpr unsigned SeenLoadingQuad=16u,LoadingQuadMaxDraws=2u;constexpr std::uint64_t LoadingQuadPs=0x4a5242663895a27dull;
+inline std::atomic<unsigned>& drawsSeen() noexcept {static std::atomic<unsigned> n{0};return n;}
+constexpr bool loadingScreenFrame(unsigned seen,unsigned draws) noexcept {return (seen&SeenLoadingQuad)!=0u && draws<=LoadingQuadMaxDraws;}
 constexpr std::uint64_t BlurPs=0x0ce70535f29e499bull;
 // v661: the game's tonemap (post_fidelity.h PostfxShaders[0]): every game frame draws it, the pause menu's frames do not (census c1 / c2
 // vs c3 / c4; the weapon wheel's blur frames do: thor-play-1021 wheel-0..2). Paused = the pause blur without the tonemap.

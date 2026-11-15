@@ -130,11 +130,13 @@ public final class SettingsPagesTest {
             tab.press(DOWN);
             same(Arrays.asList("Low-Delay Stick Input"), labels(tab.page()), "Controls");
             tab.press(DOWN);
+            same(Arrays.asList("Preset"), labels(tab.page()), "Performance (Update 1)");
+            tab.press(DOWN);
             same(Arrays.asList("Restore Original", "Save"), labels(tab.page()), "Save and restore");
             same(-1, tab.page().rowFocused, "on a category's name no row is highlighted");
             check(tab.page().columnLit, "the category's name is the light bar");
-            same(SettingsPages.SAVE, tab.page().columnSelected, "the fifth category");
-            same(Arrays.asList("Display", "Frame Rate", "World", "Controls", "Save And Restore"), Arrays.asList(tab.page().column), "the categories, in title case");
+            same(SettingsPages.SAVE, tab.page().columnSelected, "the sixth category");
+            same(Arrays.asList("Display", "Frame Rate", "World", "Controls", "Performance", "Save And Restore"), Arrays.asList(tab.page().column), "the categories, in title case");
         });
 
         test("rows: UP / DOWN stay inside the category, wrap on a fresh press, stop when held", () -> {
@@ -661,7 +663,7 @@ public final class SettingsPagesTest {
             named.pages.afterSave(named.model, named.nav, onDrift);
             page = named.page();
             check(named.nav.level() == ShellNav.COLUMN && page.rowFocused == -1, "Start on a category's name leaves the highlight on the name");
-            same(SettingsPages.CONTROLS, page.columnSelected, "the same category");
+            same(SettingsPages.PERFORMANCE, page.columnSelected, "the same category");   // (UP from Save: Performance since Update 1)
         });
 
         test("touch: a tap on a row that is not highlighted only moves the highlight there; a tap on the highlighted row acts", () -> {
@@ -690,6 +692,7 @@ public final class SettingsPagesTest {
             tab.press(DOWN);
             tab.press(DOWN);
             tab.press(DOWN);
+            tab.press(DOWN);   // (Update 1: Performance stands between Controls and Save)
             tab.pages.tap(tab.model, tab.nav, MenuLayout.HIT_ROW, 1);
             same(MenuModel.ACTION_NONE, tab.model.pendingAction(), "a first tap on Save saves nothing");
             same("Save", tab.focusedLabel(), "it puts the highlight on Save");
@@ -765,6 +768,7 @@ public final class SettingsPagesTest {
             named.press(B);
             named.press(UP);
             named.press(UP);
+            named.press(UP);   // (Update 1: Performance stands between Controls and Save)
             same(SettingsPages.WORLD, named.nav.column(ShellNav.SETTINGS), "the highlight is on the name World");
             named.press(Y);
             named.press(LEFT);

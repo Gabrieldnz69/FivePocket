@@ -40,7 +40,7 @@ final class Settings {
         if (values[index] == value) return this;
         int[] copy = values.clone();
         copy[index] = value;
-        return new Settings(copy);
+        return new Settings(PerformancePresets.follow(copy, key));   // (Update 1: the preset row follows its four rows)
     }
 
     boolean isDefault() {

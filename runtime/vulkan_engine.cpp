@@ -24,6 +24,7 @@
 #include <chrono>  // v110
 #if defined(__ANDROID__)
 #include <android/log.h>
+#include "present_robust.h" // present-robust (v1690): the 5 s engine fence waits absorb early VK_TIMEOUT returns
 #endif
 // v110 (guest_cooperative_executor.cpp): whether an exclusive scope owns the executor (the world is stopped).
 namespace recomp::bootstrap { bool guestExclusiveScopeActive() noexcept __attribute__((weak)); }
@@ -398,7 +399,7 @@ bool VulkanEngine::completeStateBatch(const std::vector<std::uint32_t>& words,
     }
     VkSubmitInfo submit{}; submit.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount=1; submit.pCommandBuffers=&command;
     if (recomp::gpu::lockedQueueSubmit(context_.queue,1,&submit,fence_)!=VK_SUCCESS ||
-        vkWaitForFences(context_.device,1,&fence_,VK_TRUE,5'000'000'000ULL)!=VK_SUCCESS) {
+        recomp::gpu::robust::waitFences(vkWaitForFences,context_.device,1,&fence_,VK_TRUE,5'000'000'000ULL,"engine")!=VK_SUCCESS) {
         std::fflush(stdout); std::_Exit(4);
     }
     release();
@@ -551,7 +552,7 @@ bool VulkanEngine::completeExperimentalConstantInitialization(const StoppedConst
     VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1; submit.pCommandBuffers = &r.command;
     if (recomp::gpu::lockedQueueSubmit(context_.queue,1,&submit,r.fence) != VK_SUCCESS ||
-        vkWaitForFences(r.device,1,&r.fence,VK_TRUE,5'000'000'000ULL) != VK_SUCCESS) {
+        recomp::gpu::robust::waitFences(vkWaitForFences,r.device,1,&r.fence,VK_TRUE,5'000'000'000ULL,"engine") != VK_SUCCESS) {
         std::fflush(stdout); std::_Exit(4); // Never release possibly in-flight work.
     }
     const auto* bytes = static_cast<const std::uint8_t*>(r.mapped);
@@ -757,7 +758,7 @@ bool VulkanEngine::fenceNativeQueue() {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command;
     if (recomp::gpu::lockedQueueSubmit(context_.queue, 1, &submit, fence_) != VK_SUCCESS ||
-        vkWaitForFences(context_.device, 1, &fence_, VK_TRUE, 5'000'000'000ULL) != VK_SUCCESS) {
+        recomp::gpu::robust::waitFences(vkWaitForFences,context_.device, 1, &fence_, VK_TRUE,5'000'000'000ULL,"engine") != VK_SUCCESS) {
         // No acknowledgment and no destruction of potentially in-flight work.
         std::fflush(stdout); std::_Exit(4);
     }
@@ -957,7 +958,7 @@ bool VulkanEngine::writeNativeDisplayEvents(const std::array<std::uint32_t,2>& v
     if(vkEndCommandBuffer(command)!=VK_SUCCESS || vkResetFences(context_.device,1,&fence_)!=VK_SUCCESS){release();return false;}
     VkSubmitInfo submit{};submit.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;submit.commandBufferCount=1;submit.pCommandBuffers=&command;
     if(recomp::gpu::lockedQueueSubmit(context_.queue,1,&submit,fence_)!=VK_SUCCESS ||
-        vkWaitForFences(context_.device,1,&fence_,VK_TRUE,5'000'000'000ULL)!=VK_SUCCESS){std::fflush(stdout);std::_Exit(4);}
+        recomp::gpu::robust::waitFences(vkWaitForFences,context_.device,1,&fence_,VK_TRUE,5'000'000'000ULL,"engine")!=VK_SUCCESS){std::fflush(stdout);std::_Exit(4);}
     release();
     if(std::memcmp(mapped_,expected.data(),4096)){queueVerified_=false;return false;}
     std::memcpy(output.data(),static_cast<const std::uint8_t*>(mapped_)+16,8);return true;
@@ -1053,8 +1054,26 @@ bool VulkanEngine::initialize() {
     requirements.clipDistance = true;
     requirements.fragmentStoresAndAtomics = true;
     requirements.vertexStoresAndAtomics = nativeGeometryEnabled_;
-    if (!context_.inspect() || context_.properties.limits.maxBoundDescriptorSets < 5 ||
-        !context_.create(requirements,nativeGeometryEnabled_,nativeGeometryEnabled_,nativeLogicalGeometryEnabled_)) return false;
+    if (!context_.inspect()) return false;
+    if (context_.properties.limits.maxBoundDescriptorSets < 5) {
+        // v1303: the generic renderer folds its six sets into three on a GPU that binds fewer than six (generic_renderer.cpp,
+        // foldSets), so four is enough there; diag-gpu-fold-off (no fold) asks for five again. Only read on such a GPU.
+        const bool foldOff = ::access(RECOMP_APP_PATH("/private-trace/diag-gpu-fold-off"), F_OK) == 0;
+        const unsigned minimum = foldOff ? 5u : 4u;
+        if (context_.properties.limits.maxBoundDescriptorSets < minimum) {
+        // v1302 (bugfix-stability 2026-11-09): opt-in "Try anyway on an unsupported GPU" (launcher row; file gpu-try-anyway).
+        // Off (the default) refuses exactly as before; the file is only read on a GPU below the minimum.
+        const bool tryAnyway = ::access(RECOMP_APP_PATH("/private-trace/gpu-try-anyway"), F_OK) == 0;
+        __android_log_print(tryAnyway ? ANDROID_LOG_WARN : ANDROID_LOG_ERROR, "RecompRenderer",
+                            "RENDER_GPU_SET_SHORTFALL maxBoundDescriptorSets=%u minimum=%u layout=%u try_anyway=%d action=%s",
+                            context_.properties.limits.maxBoundDescriptorSets, minimum, foldOff ? 6u : 3u, tryAnyway ? 1 : 0, tryAnyway ? "continue" : "refuse");
+        if (!tryAnyway) return false;
+        } else {
+            __android_log_print(ANDROID_LOG_INFO, "RecompRenderer", "RENDER_GPU_SET_FOLD maxBoundDescriptorSets=%u minimum=4 layout=3 action=continue",
+                                context_.properties.limits.maxBoundDescriptorSets);
+        }
+    }
+    if (!context_.create(requirements,nativeGeometryEnabled_,nativeGeometryEnabled_,nativeLogicalGeometryEnabled_)) return false;
     VkCommandPoolCreateInfo pool{};
     pool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool.queueFamilyIndex = context_.queueFamily;
@@ -1116,7 +1135,7 @@ bool VulkanEngine::initialize() {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command;
     if (!checkVulkan(recomp::gpu::lockedQueueSubmit(context_.queue, 1, &submit, fence_), "engine-submit")) return false;
-    const auto waited = vkWaitForFences(context_.device, 1, &fence_, VK_TRUE, 5'000'000'000ULL);
+    const auto waited = recomp::gpu::robust::waitFences(vkWaitForFences,context_.device, 1, &fence_, VK_TRUE,5'000'000'000ULL,"engine");
     if (waited != VK_SUCCESS) {
         checkVulkan(waited, "engine-wait");
         std::fflush(stdout);

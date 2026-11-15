@@ -45,14 +45,17 @@ public final class CapabilitiesTest {
         test("the four real builds: what the settings screen may offer on each", new SettingsCoreTestKit.Case() {
             @Override public void run() {
                 same(Arrays.asList("inputUnbuffered=1"), supported(SettingsCoreTestKit.v669()), "v669, the phone's standing library: it reads no setting file");
-                same(Arrays.asList("frameCap=30", "scaler=bicubic", "scaler=nearest", "fsrSharpnessTenths=*", "fpsOverlay=1", "inputUnbuffered=1"),
+                same(Arrays.asList("frameCap=30", "scaler=bicubic", "scaler=nearest", "fsrSharpnessTenths=*", "fpsOverlay=1", "inputUnbuffered=1",
+                        "performancePreset=custom", "performancePreset=battery"),   // (Update 1: the preset)
                         supported(caps(V458_NAMES)), "v458");
                 same(Arrays.asList("frameCap=40", "frameCap=30", "frameCap=24", "frameCap=auto", "scaler=bicubic", "scaler=nearest",
                         "fsrSharpnessTenths=*", "fpsOverlay=1", "worldTraffic=*", "worldPedestrians=*", "worldParkedCars=*",
-                        "worldScenarioPedestrians=*", "inputUnbuffered=1"), supported(SettingsCoreTestKit.v461()), "v461");
+                        "worldScenarioPedestrians=*", "inputUnbuffered=1", "performancePreset=custom", "performancePreset=battery", "performancePreset=adaptive"),
+                        supported(SettingsCoreTestKit.v461()), "v461");
                 same(Arrays.asList("frameCap=40", "frameCap=30", "frameCap=24", "frameCap=auto", "scaler=gsr1", "scaler=bicubic", "scaler=nearest",
                         "fsrSharpnessTenths=*", "fpsOverlay=1", "worldTraffic=*", "worldPedestrians=*", "worldParkedCars=*",
-                        "worldScenarioPedestrians=*", "inputUnbuffered=1"), supported(SettingsCoreTestKit.v462()), "v462");
+                        "worldScenarioPedestrians=*", "inputUnbuffered=1", "performancePreset=custom", "performancePreset=battery", "performancePreset=adaptive"),
+                        supported(SettingsCoreTestKit.v462()), "v462");
             }
         });
 
@@ -62,7 +65,8 @@ public final class CapabilitiesTest {
                         "scaler=nearest", "fsrSharpnessTenths=*", "renderScalePercent=50", "renderScalePercent=75", "renderScalePercent=88",
                         "renderScalePercent=115", "renderScalePercent=125", "renderScalePercent=150",
                         "fpsOverlay=1", "worldTraffic=*", "worldPedestrians=*", "worldParkedCars=*", "worldScenarioPedestrians=*",
-                        "worldDrawDistance=*", "inputUnbuffered=1"), supported(caps(ALL_NAMES)), "supported non-default values");
+                        "worldDrawDistance=*", "inputUnbuffered=1", "performancePreset=custom", "performancePreset=battery", "performancePreset=adaptive"),
+                        supported(caps(ALL_NAMES)), "supported non-default values");
             }
         });
 
@@ -228,7 +232,7 @@ public final class CapabilitiesTest {
                 for (SettingSpec spec : SettingsSchema.all()) {
                     if (v458.anyChoice(spec.key)) rows.add(spec.key);
                 }
-                same(Arrays.asList("frameCap", "scaler", "fsrSharpnessTenths", "fpsOverlay", "inputUnbuffered"), rows, "rows that are not disabled on v458");
+                same(Arrays.asList("frameCap", "scaler", "fsrSharpnessTenths", "fpsOverlay", "inputUnbuffered", "performancePreset"), rows, "rows that are not disabled on v458");   // (Update 1: + the preset)
                 rows.clear();
                 for (SettingSpec spec : SettingsSchema.all()) {
                     if (SettingsCoreTestKit.v669().anyChoice(spec.key)) rows.add(spec.key);

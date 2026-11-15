@@ -331,6 +331,26 @@ public final class LaunchAdviceTest {
                 check(asking.asking(), "(the question is up)");
                 laidOut(asking, measure, utc, "the question, " + perCharacter);
                 ++pages;
+                // The graphics check (GpuSupport, bug report 2026-11-07): its question before Play and its reason after a
+                // stop, for an old Adreno chip missing three things with its full driver name (the long case seen in
+                // reports of Adreno 6xx drivers).
+                GpuSupport.Verdict oldChip = GpuSupport.judge("GPU_PROBE_V1 api=1.1.128 descriptor_indexing=1"
+                        + " shaderClipDistance=0 vertexPipelineStoresAndAtomics=0 maxBoundDescriptorSets=4"
+                        + " device=Adreno (TM) 650 (Qualcomm Technologies Inc.)");
+                check(oldChip.refused() && oldChip.missing.size() == 3, "(fixture: three things missing)");
+                LauncherMenu gpuAsking = new LauncherMenu(true);
+                gpuAsking.setInstall(states.get(Install.READY_PIN_UNUSABLE));
+                gpuAsking.setGpu(oldChip);
+                gpuAsking.tap(LauncherMenu.PRIMARY, false);
+                check(gpuAsking.asking(), "(the GPU question is up)");
+                laidOut(gpuAsking, measure, utc, "the GPU question, " + perCharacter);
+                LauncherMenu gpuStopped = new LauncherMenu(true);
+                gpuStopped.setInstall(states.get(Install.READY_PIN_UNUSABLE));
+                gpuStopped.setGpu(oldChip);
+                gpuStopped.startOutcome(outcomes().get("after a start, crash"));
+                equal(GpuSupport.afterStart(oldChip), gpuStopped.failure(), "(the GPU reason is up)");
+                laidOut(gpuStopped, measure, utc, "the GPU reason after a crash, " + perCharacter);
+                pages += 2;
             }
             System.out.println("     " + pages + " Play pages laid out with the app's page builder at two text widths");
         });

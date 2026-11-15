@@ -11,7 +11,7 @@
 //    center it too": 1.6x v667's 120, the label rendered at the matching 58-px cap), centred on the lower screen; fill ResumePillRgb at ResumePillAlpha = exactly the PS5's 31,35,38 over its 12,17,20
 //    backdrop, and still a translucent dark pill behind white text over the bright outdoor blur (v667 preview: white at 0.08, the first
 //    reading of the reference, vanished there); pressed (the library's Close request): the PS5's focused look, opaque light, dark text;
-//  - the label "Resume Game" (map_tap_label.h: Helvetica Neue Medium, the closest available face to the game's "Sign In" heading).
+//  - the label "Resume Game" (map_tap_label.h: Nunito Sans at weight 700, the app's own font; its stroke weight matches the earlier face).
 #include "map_tap_label.h"
 #include <algorithm>
 #include <cmath>

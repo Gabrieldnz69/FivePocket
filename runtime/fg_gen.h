@@ -27,6 +27,7 @@
 // inputs to v513's file and to this one).
 #include <algorithm>
 #include <array>
+#include <atomic> // v1041: cutscenesRestored()
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -151,9 +152,11 @@ inline void takeCamera(Camera& c,const std::array<std::uint32_t,1024>& pixel) no
 }
 
 // Why a frame got no made picture (counted per reason in RENDER_DIRECT_FG_GEN nogen=).
-enum class Why : unsigned {Ok=0,NoFrame,NoCamera,Orthonormal,Lens,ViewProj,NoDepth,DepthSize,Source,Objects,Cut,NoPrevious,TonemapDraws,Count};
+enum class Why : unsigned {Ok=0,NoFrame,NoCamera,Orthonormal,Lens,ViewProj,NoDepth,DepthSize,Source,Objects,Cut,NoPrevious,TonemapDraws,Cutscene,Count};
 inline const char* text(Why w) noexcept {
-    static constexpr const char* names[]{"ok","no-frame","no-camera","orthonormal","lens","viewproj","no-depth","depth-size","source","objects","cut","no-previous","tonemap-draws"};
+    static constexpr const char* names[]{"ok","no-frame","no-camera","orthonormal","lens","viewproj","no-depth","depth-size","source","objects","cut","no-previous","tonemap-draws",
+                                         "cutscene"};
+    static_assert(sizeof names/sizeof names[0]==unsigned(Why::Count),"one name per reason");
     return unsigned(w)<unsigned(Why::Count)?names[unsigned(w)]:"?";
 }
 
@@ -191,6 +194,22 @@ inline Why cameraVerdict(unsigned tonemapDraws,bool taken,const Camera& c) noexc
     if(tonemapDraws!=1)return Why::TonemapDraws;
     return checkCamera(c);
 }
+
+// v1041 (bugfix-stability, lead 2026-11-07, intro cutscene glitch B): no made picture while a cutscene plays. The generator's 8x8
+// block classes fail where the camera travels with a subject (the plane-window pan of the online intro: staircases on every made
+// frame, 9/9 clean with FG off, t-intro-census-20261107-1851). Cutscenes take no input and the console shows them at 30 real frames,
+// so the real frame is shown alone (reason "cutscene"; one keeper interruption per cutscene at most: a stretch of refused frames is
+// ONE, and the "inputs" fall-back is never final). files/private-trace/diag-fg-cutscenes (polled with the generator's switches)
+// restores the build before: made pictures in cutscenes too. cutscene: the game's IS_CUTSCENE_ACTIVE / IS_CUTSCENE_PLAYING bytes
+// (touch_context.h Cutscene, read from guest memory by the renderer).
+inline std::atomic<bool>& cutscenesRestored() noexcept {static std::atomic<bool> on{false};return on;}
+inline Why cutsceneVerdict(Why camera,bool cutscene,bool restored) noexcept {return cutscene && !restored?Why::Cutscene:camera;}
+// v1400 (android-qol 2026-11-09, the Fold candidate: v723's rule carried to the integrated line) v723 (bugfix-stability 2026-11-08; the v722 Fold check, android-qol-v722-fold-check-2026-11-08.md): which cutscene manager byte means "a
+// cutscene plays". Both are plain byte reads of the manager (u32 0x8390B9AC): IS_CUTSCENE_ACTIVE (cce2fe9d -> sub_82D5AF20) = +3415,
+// IS_CUTSCENE_PLAYING (a3a78392 -> sub_82D5AF58 -> sub_82328038) = +3147. v722 paused on ACTIVE || PLAYING and kept frame generation off for
+// ~95 s of the prologue's normal play (HUD and minimap up, control on), while the game's own scripts read IS_CUTSCENE_PLAYING = 0 the whole
+// time (the telemetry's cut=0 is that native's result): ACTIVE stays set while a cutscene is loaded but not playing. PLAYING alone.
+inline bool cutscenePlaying(bool active,bool playing) noexcept {(void)active;return playing;}
 
 // How far the camera went from `prev` to `cur`.
 struct Step {double metres=0,degrees=0,lens=0;};

@@ -4,13 +4,14 @@
     package_release.py --version V --out NEW_DIR
                        [--android-apk APK] [--thor-apk APK]
                        [--builder-macos DIR [--macos-editions ios|all]]
-                       [--builder-windows DIR] [--builder-thor-windows DIR] [--ios-kit DIR]
+                       [--builder-windows DIR] [--builder-thor-windows DIR] [--builder-thor-windows-arm64 DIR] [--ios-kit DIR]
                        [--retail-list FILE [--generated-list FILE]] [--extra PRIVATE_LITERALS] [--key-file F ...]
                        [--report-dir DIR] [--taint-recheck EARLIER_REPORT_DIR]
 
 Each download is staged as FivePocket[-Thor-Edition][-iOS][-Builder]-V-<platform>/ holding its payload, its README.txt
 (from packaging/), COPYING, LEGAL.md, THIRD-PARTY-NOTICES.md and LICENSES/. The Windows builders are one per Android
-edition (--builder-windows: FivePocket; --builder-thor-windows: Thor Edition). The Mac builder is named for what it
+edition (--builder-windows: FivePocket; --builder-thor-windows: Thor Edition; --builder-thor-windows-arm64: the Thor
+Edition for Windows on ARM, a win32-arm64 package with its native compiler programs). The Mac builder is named for what it
 makes: --macos-editions ios (default) for a package with the iOS and Duo targets only, all when it also builds the
 Android editions. The source archive is `git archive` of this
 checkout's HEAD (the checkout must be clean) plus SOURCES.txt naming the commit. RELEASE-NOTES.md
@@ -380,6 +381,7 @@ def main(argv=None) -> int:
     ap.add_argument('--macos-editions', choices=('ios', 'all'), default='ios')
     ap.add_argument('--builder-windows')
     ap.add_argument('--builder-thor-windows')
+    ap.add_argument('--builder-thor-windows-arm64')
     ap.add_argument('--ios-kit', help='the game-free iOS kit folder the Mac builder makes the app from')
     ap.add_argument('--retail-list')
     ap.add_argument('--generated-list')
@@ -392,7 +394,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     out = Path(a.out)
     inputs = {'--android-apk': a.android_apk, '--thor-apk': a.thor_apk, '--builder-macos': a.builder_macos,
-              '--builder-windows': a.builder_windows, '--builder-thor-windows': a.builder_thor_windows, '--ios-kit': a.ios_kit}
+              '--builder-windows': a.builder_windows, '--builder-thor-windows': a.builder_thor_windows,
+              '--builder-thor-windows-arm64': a.builder_thor_windows_arm64, '--ios-kit': a.ios_kit}
     missing = [f'{flag} {path}' for flag, path in inputs.items() if path and not Path(path).exists()]
     if missing:
         print('package_release: missing input: ' + ', '.join(missing), file=sys.stderr)
@@ -426,6 +429,9 @@ def main(argv=None) -> int:
     if a.builder_thor_windows:
         plans.append((f'FivePocket-Thor-Edition-Builder-{v}-windows-x64', 'README-builder-thor-windows.txt',
                       {'builder': a.builder_thor_windows}, 'zip'))
+    if a.builder_thor_windows_arm64:
+        plans.append((f'FivePocket-Thor-Edition-Builder-{v}-windows-arm64', 'README-builder-thor-windows-arm64.txt',
+                      {'builder': a.builder_thor_windows_arm64}, 'zip'))
     if a.ios_kit:  # the game-free kit only; an .ipa (builder output) fails scan_secrets in any download
         plans.append((f'FivePocket-iOS-Kit-{v}-macos-arm64', 'README-ios.txt', {'ios-kit': a.ios_kit}, 'zip'))
 
@@ -445,6 +451,14 @@ def main(argv=None) -> int:
         staged.append((source, 'tar.xz'))
 
         failures = []
+        # GPL corresponding source (D1, folded into Update 1): every class in each Android app has its .java in its
+        # edition tree of this source download (editions/single-screen, editions/thor-edition)
+        apk_trees = [(a.android_apk, 'single-screen'), (a.thor_apk, 'thor-edition')]
+        apk_args = [x for apk, tree in apk_trees if apk for x in ('--apk', f'{apk}={source.name}/editions/{tree}')]
+        if apk_args:
+            import check_apk_sources
+            if check_apk_sources.main(['--source', str(work), *apk_args]):
+                failures.append('check_apk_sources: an Android app class has no source in its editions/ tree')
         for folder, _ in staged:
             failures += check(folder, None, a.extra, a.key_file, None, a.report_dir)
         rows = staged_files([folder for folder, _ in staged])

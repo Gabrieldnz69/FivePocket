@@ -56,6 +56,7 @@ final class SettingsJson {
         LinkedHashMap<String, Object> object = new LinkedHashMap<String, Object>();
         object.put(VERSION_KEY, Long.valueOf(SettingsSchema.VERSION));
         for (SettingSpec spec : SettingsSchema.all()) {
+            if (spec.key.equals(SettingsSchema.PERFORMANCE_PRESET)) continue;   // (derived from four rows: never written)
             int value = settings.get(spec.key);
             if (capabilities != null && !capabilities.anyChoice(spec.key) && capabilities.valueSupported(spec.key, value)) continue;
             Object json;
@@ -109,6 +110,7 @@ final class SettingsJson {
         ArrayList<String> missing = new ArrayList<String>();
         Settings settings = Settings.defaults();
         for (SettingSpec spec : SettingsSchema.all()) {
+            if (spec.key.equals(SettingsSchema.PERFORMANCE_PRESET)) continue;   // (derived from four rows: never read)
             Object json = object.get(spec.key);
             if (json == null) {
                 missing.add(spec.key);

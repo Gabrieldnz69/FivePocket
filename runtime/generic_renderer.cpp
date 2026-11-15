@@ -90,6 +90,8 @@ extern "C" std::atomic<bool> recomp_v407_swap_delay; // v407 (guest_cooperative_
 #include "generic_renderer.h"
 #include "vulkan_queue_lock.h" // v119
 #include "direct_present.h" // v255
+#include "hud_game_state.h" // v1041: guestBase() in every edition (the cutscene pause of frame generation)
+#include "touch_context.h"  // v1041: IS_CUTSCENE_ACTIVE / IS_CUTSCENE_PLAYING bytes
 #include "pace_caps.h"
 #include "sens_jobs.h" // sens-jobs (v535 -> v559, measurement only): diag-sens-jobs // pace-caps (lane A): diag-pace-* (paceWindow; the queued present's tag)
 #include "latency_lat2.h" // latency-path (lat2 events, L1 worker nice policy)
@@ -133,8 +135,14 @@ namespace { // latency-path (lat2): out of line so the calling functions keep th
 #include "audio_ahead.h" // audio-ahead: diag-au-ahead (-1/-2/-4): the switch and its counters (RENDER_DIAG_AU_AHEAD, V210Z)
 #include "generic_texture_decode.h"
 #include "census_af_diag.h" // artifacts-1: census-only constants / texture bytes (diag-census-constants, diag-census-textures)
+#include <limits>
+#include "hs_sky_skip.h" // v1073: the lamp-cone sky skip (depth bounds on the hi-stencil marking passes)
+#include "sky_stencil_narrow.h" // v1695: its fallback without depthBounds (v1740: ON by default where depthBounds is unusable; kill switch diag-sky-stencil-narrow-off)
+#include "census_rect.h" // v1081: the census resolved-dump rectangle (diag-census-resolved-rect)
+extern "C" std::atomic<bool> recomp_depth_bounds_enabled; // v1073: device.cpp
 #include "world_load.h" // world-load: files/settings/world-load.txt and diag-wl-* (recomp::wl::window; the sliders default to the original)
 #include "generic_resolve_writeback.h" // v75
+#include "resolve_raw_words.h" // v1194: the head blend's DXT1 compression (clay faces)
 #include "generic_async_queue.h" // v111
 #include "generic_pipeline_recipes.h" // v139
 #include "generic_swap_neon.h" // v123
@@ -180,6 +188,8 @@ namespace { struct HostActivityScope { const char* p; explicit HostActivityScope
 #include <cstring>
 #include <deque>
 #include <condition_variable> // v204
+#include "freezewatch.h" // v965 (DIAGNOSTIC): the freeze self-report (RENDER_DIAG_FREEZEWATCH)
+#include "prewarm_quiesce.h" // v1711: the warm-up thread stops before the device goes
 #include <thread> // v204 (PoolResetter; host builds too)
 #include <unordered_set>
 #include <set>
@@ -218,6 +228,7 @@ extern "C" { __attribute__((weak)) extern std::atomic<bool> recomp_ocq_precise; 
 #include "occlusion_queries.h" // occlusion package: diag-oc-queries (precise occlusion queries for the draws of ZPD intervals)
 extern "C" { __attribute__((weak)) extern std::atomic<unsigned> recomp_df_bias_float; } // depth-float (device.cpp: VK_EXT_depth_bias_control)
 #include "spirv_ubo_banks.h" // v294
+#include "spirv_set_fold.h" // v1303: six descriptor sets folded into three (GPUs that bind fewer than six)
 #include "spirv_gc_fold.h" // gpu-cost: diag-gc-index-fold (the shared block's draw-invariant words as constants)
 #include "cexec_overlay.h" // artifact A: diag-cexec-bools (the vertex shaders with boolean-conditional exec blocks, re-translated)
 #include "reglod_overrides.h" // dusk-speckle: diag-generic-no-reglod-fix (the pixel shaders with register-LOD fetches, re-translated)
@@ -1118,6 +1129,99 @@ State state;
              (unsigned long long)s.createdAfter[1],(unsigned long long)s.createdAfter[0],(unsigned long long)s.slowAfter[1],(unsigned long long)s.slowAfter[0],
              double(s.nsAfter[1])*1e-6,double(s.nsAfter[0])*1e-6,double(s.maxAfterNs)*1e-6);
 }
+// prewarm-yield BEGIN (Android port of the iOS session's exec-starvation fix, 2026-11-06; scheduling only: what is compiled and recorded
+// does not change). The convoy (iOS evidence, DISCOVERIES 2026-11-06 20:00): the warm-up thread (startRecipes, here pinned to the little
+// cores at nice 10) holds d.pipelineCacheMutex across each vkCreateGraphicsPipelines of its recipes, back to back (compileRecipe); the draw
+// path's creations (pipeline(), quad, frame generation) take the same mutex, so a frame that needs new pipelines can queue behind slow
+// first-time compiles. On (default): compileRecipe does not take the mutex while a draw-path creation is between its gate and its end, nor
+// within QuietNs of the last one's end; a draw-path creation then waits at most for the one warm-up compile already inside the mutex.
+// Switch (Android): files/private-trace/diag-pw-yield-off present = off (the old order). The warm-up thread re-reads it every 250 ms
+// (through probe, set by startRecipes), so one run can alternate off/on for an in-run A/B. While the warm-up runs, every draw-path
+// creation's lock wait and total time are counted under the phase it started in (RENDER_DIAG_PW_YIELD lines). No Android freeze is
+// known; this is preventive. The API (configure / state / DrawPathCreation / beforePrewarmCompile) is the iOS harness's.
+namespace pwyield {
+inline constexpr std::int64_t QuietNs=20'000'000; // 20 ms: the gaps between one frame's consecutive draw-path creations
+inline constexpr std::int64_t ProbeNs=250'000'000; // the warm-up thread re-reads the switch this often
+struct Phase {std::atomic<std::uint64_t> created{0},waitNs{0},totalNs{0},maxWaitNs{0};};
+struct State {
+    std::atomic<bool> on{false};
+    std::atomic<int> urgent{0};                 // draw-path creations between their gate entry and their creation's end
+    std::atomic<std::int64_t> lastUrgentEndNs{0}; // steady-clock ns of the last one's end (0: none yet)
+    std::atomic<std::uint64_t> yields{0},yieldNs{0}; // prewarm compiles that stood back / the time they stood back
+    std::atomic<bool> warming{false};           // the warm-up thread runs (creations are counted only then)
+    std::array<Phase,2> phase{};                // [1] yield on, [0] off: draw-path creations during the warm-up
+    std::atomic<std::uint64_t> flips{0};
+    bool (*probe)()=nullptr;std::int64_t nextProbeNs=0; // the warm-up thread's own (the switch read, true = on; nullptr: fixed)
+};
+inline State& state() noexcept {static State s;return s;}
+inline std::int64_t nowNs() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+inline bool configure(const char* value) noexcept { // the switch's value, once ("0": off; unset or anything else: on)
+    const bool on=!(value && value[0]=='0' && !value[1]);
+    state().on.store(on,std::memory_order_release);return on;
+}
+inline void maxStore(std::atomic<std::uint64_t>& a,std::uint64_t v) noexcept {
+    std::uint64_t c=a.load(std::memory_order_relaxed);while(v>c && !a.compare_exchange_weak(c,v,std::memory_order_relaxed)){}
+}
+struct DrawPathCreation { // one per draw-path pipeline creation, made before it takes the mutex; acquired() right after the lock is ours
+    bool active;unsigned phase;std::int64_t t0,t1=0;
+    DrawPathCreation() noexcept:active(state().on.load(std::memory_order_acquire)),phase(active?1u:0u),t0(nowNs()) {
+        if(active)state().urgent.fetch_add(1,std::memory_order_acq_rel);
+    }
+    void acquired() noexcept {t1=nowNs();}
+    ~DrawPathCreation() {
+        auto& s=state();const std::int64_t end=nowNs();
+        if(active){s.lastUrgentEndNs.store(end,std::memory_order_release);s.urgent.fetch_sub(1,std::memory_order_acq_rel);}
+        if(s.warming.load(std::memory_order_acquire)) {
+            auto& ph=s.phase[phase];const std::uint64_t w=std::uint64_t((t1?t1:end)-t0);
+            ph.created.fetch_add(1,std::memory_order_relaxed);ph.waitNs.fetch_add(w,std::memory_order_relaxed);
+            ph.totalNs.fetch_add(std::uint64_t(end-t0),std::memory_order_relaxed);maxStore(ph.maxWaitNs,w);
+        }
+    }
+    DrawPathCreation(const DrawPathCreation&)=delete;DrawPathCreation& operator=(const DrawPathCreation&)=delete;
+};
+// The warm-up thread, before each compile: the switch re-read (at most every ProbeNs; returns true when it flipped), then the gate.
+inline bool refresh() noexcept {
+    auto& s=state();if(!s.probe)return false;
+    const std::int64_t now=nowNs();if(now<s.nextProbeNs)return false;
+    s.nextProbeNs=now+ProbeNs;const bool on=s.probe();
+    if(on==s.on.load(std::memory_order_relaxed))return false;
+    s.on.store(on,std::memory_order_release);s.flips.fetch_add(1,std::memory_order_relaxed);return true;
+}
+inline void beforePrewarmCompile() noexcept { // the prewarm thread, before each compile takes the mutex
+    auto& s=state();
+    if(!s.on.load(std::memory_order_acquire))return;
+#if !defined(PWYIELD_MUTANT_GATE_IGNORED) // harness mutant: the switch reads on but the gate never waits
+    std::int64_t waitedFrom=0;
+    for(;;) {
+        const std::int64_t now=nowNs();
+        if(s.urgent.load(std::memory_order_acquire)==0 && now-s.lastUrgentEndNs.load(std::memory_order_acquire)>=QuietNs) {
+            if(waitedFrom){s.yields.fetch_add(1,std::memory_order_relaxed);s.yieldNs.fetch_add(std::uint64_t(now-waitedFrom),std::memory_order_relaxed);}
+            return;
+        }
+        if(!waitedFrom)waitedFrom=now;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+#endif
+}
+// One line: the switch, the yields so far, and per phase the draw-path creations during the warm-up with their mean lock wait / total.
+inline int line(char* out,std::size_t size,const char* why) noexcept {
+    auto& s=state();
+    const auto ph=[&](unsigned i,int k)->double {
+        const auto& p=s.phase[i];const double n=double(p.created.load(std::memory_order_relaxed));
+        if(k==0)return n;
+        if(k==1)return n?double(p.waitNs.load(std::memory_order_relaxed))*1e-6/n:0.0;
+        if(k==2)return n?double(p.totalNs.load(std::memory_order_relaxed))*1e-6/n:0.0;
+        return double(p.maxWaitNs.load(std::memory_order_relaxed))*1e-6;
+    };
+    return std::snprintf(out,size,"RENDER_DIAG_PW_YIELD %s on=%u flips=%llu yields=%llu yield_ms=%.0f on_created=%.0f on_wait_ms=%.2f "
+        "on_create_ms=%.2f on_max_wait_ms=%.1f off_created=%.0f off_wait_ms=%.2f off_create_ms=%.2f off_max_wait_ms=%.1f",why,
+        unsigned(s.on.load()),(unsigned long long)s.flips.load(),(unsigned long long)s.yields.load(),double(s.yieldNs.load())*1e-6,
+        ph(1,0),ph(1,1),ph(1,2),ph(1,3),ph(0,0),ph(0,1),ph(0,2),ph(0,3));
+}
+}
+// prewarm-yield END
 constexpr std::size_t CodeCacheLimit=16384;      // distinct microcode strings kept (pack has 3642)
 constexpr std::size_t BindingCacheLimit=65536;   // distinct texture fetch words kept
 // v19: depth resolves copy D24 depth into an R32F texture with this compute shader.
@@ -1302,7 +1406,7 @@ struct PtxLoad {bool enabled=false;unsigned applied=0,mismatched=0;const char* w
         GLOG("RENDER_GENERIC_COISSUE_REGLOD_FIX overrides=%zu applied=%u words=%u why=%s",std::size(CoIssueRegLodOverrides),b.applied,b.words,b.why);
     }
 }
-
+#include "ocean_round_load.inc" // ocean-census (PLAN U2): oceanRoundLoad(), default off (diag-ocean-round / -bias-ulp / -bias-step)
 struct Buffer {VkBuffer buffer=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;void* mapped=nullptr;VkDeviceSize size=0;
     VkDeviceSize bytes=0;}; // v96: the allocation's size (VkMemoryRequirements)
 struct Image {
@@ -1411,6 +1515,7 @@ VkFormat colorFormat(unsigned xenos) {
     case 7: return VK_FORMAT_R16G16B16A16_SFLOAT;
     case 14: return VK_FORMAT_R32_SFLOAT;
     case 15: return VK_FORMAT_R32G32_SFLOAT;
+    case recomp::gpu::generic::rawwords::ExactFixed16x4: return VK_FORMAT_R32G32B32A32_SFLOAT; // v1194: k_16_16_16_16 with a colour exponent bias, exact
     default: return VK_FORMAT_R8G8B8A8_UNORM;
     }
 }
@@ -1429,7 +1534,7 @@ unsigned memoryLog2Bytes(unsigned textureFormat) {
     default: return 0xFF;
     }
 }
-bool fourComponentColorFormat(unsigned f){return f<=3 || f==5 || f==7 || f==10 || f==12;}
+bool fourComponentColorFormat(unsigned f){return f<=3 || f==5 || f==7 || f==10 || f==12 || f==recomp::gpu::generic::rawwords::ExactFixed16x4;} // (v1194: + the exact key)
 float halfToFloat(std::uint16_t h) {
     const unsigned e=(h>>10)&31,m=h&1023;
     const float r=e==31?(m?NAN:INFINITY):e?std::ldexp(1.0f+m/1024.0f,int(e)-15):std::ldexp(m/1024.0f,-14);
@@ -1453,6 +1558,7 @@ std::uint32_t physicalAddress(std::uint32_t a){return (a&0x1FFFFFFFu)+(((a>>20)+
 // v40: `written` orders every write (pass begin, clear, resolve clear) so a resolve reads the target
 // that last wrote its EDRAM base, as the hardware would.
 struct Target {Image image;bool depth=false;unsigned xenosFormat=0,pitch=0,base=0;std::uint64_t serial=0,written=0;
+    int colorExpBias=0; // v1194: RB_COLOR_INFO's colour exponent bias at its last bind (colour targets)
     VkImageView stencilView=VK_NULL_HANDLE; // v60: depth targets: the stencil aspect, for the depth word
     // v55: RB_SURFACE_INFO msaa_samples and EDRAM rows (before the next bound base) of the pass that bound it last.
     unsigned samples=0,edramRows=0;
@@ -1478,6 +1584,7 @@ struct Texture {Image image;std::uint64_t fingerprint=0;std::uint64_t lastUse=0;
     // was last shown current at (watch::Dynamic: not yet).
     bool watchHashed=false;std::uint64_t watchHash=0,watchStamp=~0ull;std::uint32_t watchMipBytes=0;};
 struct Resolved {Image image;unsigned width=0,height=0;std::uint64_t frame=0;std::array<unsigned,4> view{0,1,2,3};unsigned seq=0;
+    bool rawWords=false; // v1194: the head blend's raw-word resolve (an exact copy, written back at every level)
     // v74: the destination texture's shape (cube faces / stacked layers and mip levels the resolves write), and
     // the views handed to fetches of another dimension or LOD range (stable addresses: the binding cache keeps
     // pointers; `owned` views are destroyed with the entry's image).
@@ -1540,7 +1647,7 @@ struct FrameSlot {
     // v75: resolves written back to guest memory: their texels are copied here while the slot records and
     // taken out once its fence has signalled (waitSlot); present() publishes them (inside the caller's gate).
     struct Writeback {std::uint32_t physical=0;std::array<std::uint32_t,6> fetch{};wb::Source source=wb::Source::None;
-        unsigned x=0,y=0,w=0,h=0;bool swap=false;VkDeviceSize offset=0;unsigned seq=0;};
+        unsigned x=0,y=0,w=0,h=0;bool swap=false;VkDeviceSize offset=0;unsigned seq=0;unsigned level=0;bool raw=false;}; // (v1194: + level, raw)
     Buffer writeback;bool writebackCoherent=true;VkDeviceSize writebackUsed=0;std::vector<Writeback> writebacks;
     // v78: a frame may be several command buffers (submitPending); `cmds` grows on demand and is reset with the
     // pool. Chunk 0 is timed with `timestamps` (v71's two queries); chunk k>0 writes queries 2(k-1) (start) and
@@ -1866,7 +1973,7 @@ public:
                 pr.cv.wait(lock,[&]{return !pr.jobs.empty();});
                 const auto job=pr.jobs.front();pr.jobs.pop_front();
                 lock.unlock();
-                bool ok=vkWaitForFences(d.device,1,&job.fence,VK_TRUE,10'000'000'000ull)==VK_SUCCESS;
+                bool ok=recomp::freezewatch::wait(1,[&]{return vkWaitForFences(d.device,1,&job.fence,VK_TRUE,10'000'000'000ull);})==VK_SUCCESS; // (v965 site 1)
                 ok=ok && vkResetCommandPool(d.device,job.pool,0)==VK_SUCCESS;
                 lock.lock();
                 pr.state[job.slot]=ok?PoolResetter::Done:PoolResetter::Failed;
@@ -2193,6 +2300,41 @@ public:
     bool uboBanks=false;struct V294 {std::uint64_t rewritten=0,unbanked=0,refused=0;} v294;
     static bool uboBanksAvailable(){return &recomp_v294_ubo_banks && recomp_v294_ubo_banks.load(std::memory_order_acquire);}
     VkDescriptorType bankType(unsigned binding)const{return uboBanks && binding<2?VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;}
+    // v1303: on a GPU that binds fewer than six descriptor sets (or with diag-gpu-fold-sets, the forced check on a GPU that binds
+    // more) the main draw layout is three sets: set 0 bindings 0-3 = the 2D / 2D-array / cube / 3D image heaps (old sets 0, 1, 2, 5),
+    // set 1 = the samplers (old set 3), set 2 = the constant banks (old set 4). Every main-layout module is folded last, after every
+    // other rewrite (spirv_set_fold.h); a module the fold refuses is refused like a bank refusal. diag-gpu-fold-off: never fold (the
+    // engine's gate then asks for five sets again). Off (the default on a six-set GPU): nothing here runs.
+    // v1304 layout: set 0 = {2D heap, samplers} (per key), set 1 = {array, cube, 3D heaps} (per key, or one shared set of dummy
+    // views when the draw samples none of the three: v341's sharing), set 2 = the constant banks.
+    bool foldSets=false;VkDescriptorSetLayout foldMainLayout=VK_NULL_HANDLE,foldRareLayout=VK_NULL_HANDLE;
+    VkDescriptorPool foldDummyPool=VK_NULL_HANDLE;VkDescriptorSet foldRareDummy=VK_NULL_HANDLE;bool foldDummyFailed=false;
+    std::uint64_t foldDummyUses=0;struct {std::uint64_t main=0,rare=0,two=0;} foldBinds; // (logged while folded)
+    VkDescriptorSet foldRareDummySet() { // (made once; the same descriptors a draw's own set 1 holds when it samples none of the kinds)
+        if(foldRareDummy || foldDummyFailed)return foldRareDummy;
+        const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,3*HeapSlots};
+        VkDescriptorPoolCreateInfo p{};p.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;p.maxSets=1;p.poolSizeCount=1;p.pPoolSizes=&size;
+        VkDescriptorSetAllocateInfo a{};a.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;a.descriptorSetCount=1;a.pSetLayouts=&foldRareLayout;
+        if(vkCreateDescriptorPool(d.device,&p,nullptr,&foldDummyPool)!=VK_SUCCESS || (a.descriptorPool=foldDummyPool,vkAllocateDescriptorSets(d.device,&a,&foldRareDummy))!=VK_SUCCESS)
+            {foldDummyFailed=true;foldRareDummy=VK_NULL_HANDLE;return VK_NULL_HANDLE;}
+        std::array<std::array<VkDescriptorImageInfo,HeapSlots>,3> info{};
+        for(unsigned i=0;i<HeapSlots;++i){info[0][i]={VK_NULL_HANDLE,dummyArray.view,VK_IMAGE_LAYOUT_GENERAL};info[1][i]={VK_NULL_HANDLE,dummyCube.view,VK_IMAGE_LAYOUT_GENERAL};
+            info[2][i]={VK_NULL_HANDLE,dummy3D.view,VK_IMAGE_LAYOUT_GENERAL};}
+        std::array<VkWriteDescriptorSet,3> w{};
+        for(unsigned k=0;k<3;++k){w[k].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;w[k].dstSet=foldRareDummy;w[k].dstBinding=k;w[k].descriptorCount=HeapSlots;
+            w[k].descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;w[k].pImageInfo=info[k].data();}
+        vkUpdateDescriptorSets(d.device,3,w.data(),0,nullptr);
+        return foldRareDummy;
+    }
+    struct V1303 {std::uint64_t folded=0,unchanged=0,refused=0;} v1303;
+    bool foldWords(const std::uint32_t*& code,std::size_t& words,std::vector<std::uint32_t>& storage) {
+        if(!foldSets)return true;
+        auto f=spirv_fold::foldSets(code,words);
+        if(!f.code.empty()){storage=std::move(f.code);code=storage.data();words=storage.size();++v1303.folded;return true;}
+        if(f.why && !std::strcmp(f.why,"no-sets")){++v1303.unchanged;return true;}
+        if(v1303.refused++<8)GLOG("RENDER_GPU_FOLD_REFUSED why=%s words=%zu",f.why?f.why:"?",words);
+        return false;
+    }
     VkShaderModule graphicsModule(const std::uint32_t* code,std::size_t words) {
         std::vector<std::uint32_t> rewritten;
         if(uboBanks) {
@@ -2201,6 +2343,8 @@ public:
             else if(r.why && !std::strcmp(r.why,"no-bank"))++v294.unbanked;
             else {++v294.refused;return VK_NULL_HANDLE;} // (a storage-buffer bank against the uniform layout: refuse the draw)
         }
+        std::vector<std::uint32_t> folded; // v1303
+        if(!foldWords(code,words,folded))return VK_NULL_HANDLE;
         VkShaderModuleCreateInfo c{};c.sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;c.codeSize=words*4;c.pCode=code;
 #if defined(RECOMP_GC_TEST_CANON) // host test: the module made from its folded form (the code the fold would give it)
         const auto canon=gcCanon(code,words);if(!canon.empty()){c.pCode=canon.data();c.codeSize=canon.size()*4;}
@@ -3251,6 +3395,10 @@ public:
     //  resolvedBypass       diag-generic-no-resolved-bypass  a block-compressed fetch at a resolved address (no resolve
     //                       writes DXT/DXN/CTX1) decodes guest memory instead of the stale resolved image
     bool subresourceResolves=true,mipFingerprint=true,resolvedBypass=true;
+    //  exactFixed16 (v1194)  diag-generic-no-exact-fixed16  k_16_16_16_16 targets with a colour exponent bias keep v1113's key
+    //                       (RGBA16F, no raw-word writeback: the head blend's DXT1 compression lost, clay faces)
+    bool exactFixed16=true;
+    unsigned colorTargetKey(std::uint32_t info)const{return recomp::gpu::generic::rawwords::colorKey(info,targetFormat((info>>16)&15),exactFixed16 && !legacyKeys);}
     V74Counters v74;
     std::uint64_t textureBytes=0; // decoded bytes of every cached texture image (v74 budget)
     static constexpr std::uint64_t TextureBudgetBytes=1536ull<<20,TextureTargetBytes=1280ull<<20;
@@ -3434,7 +3582,8 @@ public:
             if(ok) {
                 VkComputePipelineCreateInfo c{};c.sType=VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;c.layout=fi.layout;
                 c.stage.sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;c.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;c.stage.module=module;c.stage.pName="main";
-                std::lock_guard lock(d.pipelineCacheMutex);
+                pwyield::DrawPathCreation pwUrgent; // prewarm-yield: frame generation may start mid-run (gated like the draw path)
+                std::lock_guard lock(d.pipelineCacheMutex);pwUrgent.acquired();
                 ok=vkCreateComputePipelines(d.device,d.pipelineCache,1,&c,nullptr,&fi.pipes[i])==VK_SUCCESS;
             }
             if(module)vkDestroyShaderModule(d.device,module,nullptr);
@@ -3510,7 +3659,7 @@ public:
         Buffer probes;std::size_t used=0;std::vector<CensusRecord> records;
         // v590 (F3 diagnostic): whole resolved images listed in files/private-trace/diag-census-resolved-dump (hex addresses),
         // copied into the probe buffer at the census frame's end and written as census/resdump-NN-ADDR-WxH-vkF.bin.
-        struct Dump {std::uint32_t address=0;std::size_t offset=0;unsigned width=0,height=0,bytes=0;VkFormat format=VK_FORMAT_UNDEFINED;};
+        struct Dump {std::uint32_t address=0;std::size_t offset=0;unsigned width=0,height=0,bytes=0;VkFormat format=VK_FORMAT_UNDEFINED;unsigned x=0,y=0;bool whole=true;}; // v1081: x,y,whole
         std::vector<Dump> dumps;
         std::FILE* file=nullptr;unsigned fileIndex=0;std::size_t fileBytes=0;
         // artifacts-1 (census_af_diag.h): the draws whose constants / sampled texture bytes this census records
@@ -3672,17 +3821,25 @@ public:
         if(censusSplitDue()){endPass(__LINE__);censusSplit();} // census-split (v607): the final probes start a new command buffer when due
         { // v590: the listed resolved images, whole (census only)
             const auto f=afdiag::loadKeyFilter(RECOMP_APP_PATH("/private-trace/diag-census-resolved-dump"));
+            // v1081 (bugfix-stability; census_rect.h): files/private-trace/diag-census-resolved-rect "x y w h" (1280x720) copies only that tile
+            // of each listed image (scaled to its size, clipped); no file = whole images (v590).
+            recomp::census_rect::Rect screenRect;
+            if(f.active && !f.keys.empty())if(std::FILE* rf=std::fopen(RECOMP_APP_PATH("/private-trace/diag-census-resolved-rect"),"r")){
+                char rt[96]{};const std::size_t rn=std::fread(rt,1,sizeof rt-1,rf);std::fclose(rf);rt[rn]=0;screenRect=recomp::census_rect::parse(rt);}
             if(f.active && !f.keys.empty() && census.probes.buffer)for(const auto k:f.keys) {
                 const auto it=resolved.find(physicalAddress(std::uint32_t(k)));
                 if(it==resolved.end() || !it->second.image.image){clog("RENDER_CENSUS RESDUMP addr=%08x not-resolved",std::uint32_t(k));continue;}
                 const auto& im=it->second.image;const unsigned bpt=remapTexelBytes(im.format);
-                const std::size_t need=(std::size_t(im.width)*im.height*bpt+15)&~std::size_t{15};
+                const auto rc=recomp::census_rect::forImage(screenRect,im.width,im.height);
+                if(!rc.w || !rc.h){clog("RENDER_CENSUS RESDUMP addr=%08x rect-outside %ux%u",it->first,im.width,im.height);continue;}
+                const std::size_t need=(std::size_t(rc.w)*rc.h*bpt+15)&~std::size_t{15};
                 if(!bpt || rsKDiffers(im,rscale::One) || census.used+need>census.probes.size){clog("RENDER_CENSUS RESDUMP addr=%08x refused vkfmt=%d",it->first,int(im.format));continue;}
                 endPass(__LINE__);barrier();
-                VkBufferImageCopy c{};c.bufferOffset=census.used;c.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};c.imageExtent={im.width,im.height,1};
+                VkBufferImageCopy c{};c.bufferOffset=census.used;c.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+                c.imageOffset={std::int32_t(rc.x),std::int32_t(rc.y),0};c.imageExtent={rc.w,rc.h,1}; // v1081: the tile (whole image without a rect)
                 vkCmdCopyImageToBuffer(cmd,im.image,VK_IMAGE_LAYOUT_GENERAL,census.probes.buffer,1,&c);
                 barrier();
-                census.dumps.push_back({it->first,census.used,im.width,im.height,bpt,im.format});census.used+=need;
+                census.dumps.push_back({it->first,census.used,rc.w,rc.h,bpt,im.format,rc.x,rc.y,rc.whole});census.used+=need;
             }
         }
         unsigned n=0;
@@ -3712,10 +3869,13 @@ public:
             clog("RENDER_CENSUS Q i=%u %c %s vkfmt=%d%s",r.seq,r.label,r.what.c_str(),int(r.format),values.c_str());
         }
         for(const auto& d:census.dumps) { // v590
-            char path[224];std::snprintf(path,sizeof path,RECOMP_APP_PATH("/private-trace/census/resdump-%02u-%08x-%ux%u-vk%d.bin"),census.count,d.address,
+            char path[224];if(d.whole)std::snprintf(path,sizeof path,RECOMP_APP_PATH("/private-trace/census/resdump-%02u-%08x-%ux%u-vk%d.bin"),census.count,d.address,
                                          d.width,d.height,int(d.format));
+            else std::snprintf(path,sizeof path,RECOMP_APP_PATH("/private-trace/census/resdump-%02u-%08x-%ux%u-at%u_%u-vk%d.bin"),census.count,d.address,
+                                         d.width,d.height,d.x,d.y,int(d.format)); // v1081: a tile at (x,y)
             bool ok=false;if(bytes)if(std::FILE* f=std::fopen(path,"wb")){ok=std::fwrite(bytes+d.offset,1,std::size_t(d.width)*d.height*d.bytes,f)==std::size_t(d.width)*d.height*d.bytes;std::fclose(f);}
-            clog("RENDER_CENSUS RESDUMP addr=%08x %ux%u vkfmt=%d bytes=%u written=%u",d.address,d.width,d.height,int(d.format),d.width*d.height*d.bytes,unsigned(ok));
+            clog("RENDER_CENSUS RESDUMP addr=%08x %ux%u at=%u,%u whole=%u vkfmt=%d bytes=%u written=%u",d.address,d.width,d.height,d.x,d.y,unsigned(d.whole),
+                 int(d.format),d.width*d.height*d.bytes,unsigned(ok));
         }
         census.dumps.clear();
         clog("RENDER_CENSUS END n=%u events=%u probes=%zu lost=%u splits=%u split_failed=%u",census.count,census.seq,census.records.size(),census.lost,
@@ -3803,7 +3963,7 @@ public:
             vkResetFences(d.device,1,&fence); // (signalled: begin() waited it; submitCurrent resets it again before the final submission)
             submitted=queueSubmit(si,fence)==VK_SUCCESS;
 #if !defined(RECOMP_CENSUS_SPLIT_MUTANT_NO_WAIT) // test mutant: the pool replaced without waiting for the submitted buffer
-            done=submitted && vkWaitForFences(d.device,1,&fence,VK_TRUE,10'000'000'000ull)==VK_SUCCESS;
+            done=submitted && recomp::freezewatch::wait(2,[&]{return vkWaitForFences(d.device,1,&fence,VK_TRUE,10'000'000'000ull);})==VK_SUCCESS; // (v965 site 2)
 #else
             done=submitted;
 #endif
@@ -4129,7 +4289,7 @@ public:
         if(!s.pending){wfSwap(k);return true;} // (worker-fixed: the idle slot may change its command pools)
         const auto t0=Clock::now();
         recomp::diag::timeline::mark(recomp::diag::timeline::GpuWaitBegin,2); // v159: slot fence
-        const auto result=vkWaitForFences(d.device,1,&s.fence,VK_TRUE,10'000'000'000ull);
+        const auto result=recomp::freezewatch::wait(3,[&]{return vkWaitForFences(d.device,1,&s.fence,VK_TRUE,10'000'000'000ull);}); // (v965 site 3)
         recomp::diag::timeline::mark(recomp::diag::timeline::GpuWaitEnd,2);
         {const auto w=nsSince(t0);perf.waitNs+=w;slowWaitNs+=w;} // v134
         if(result!=VK_SUCCESS)return false;
@@ -4312,7 +4472,7 @@ public:
         vkResetFences(d.device,1,&fence);
         if(queueSubmit(s,fence)!=VK_SUCCESS)return false; // v111: through the submit proxy on the renderer thread
         seTraceSubmit(se::Final,slots[slotIndex].chunks-1); // submit-early (armed trace; out of line)
-        auto& slot=slots[slotIndex];slot.pending=true;
+        auto& slot=slots[slotIndex];slot.pending=true;recomp::freezewatch::noteSubmit(slotIndex,(std::uint64_t)slot.fence); // (v965)
         if(asyncPoolResetEnabled())queuePoolReset(slotIndex); // v204
         slot.garbage.insert(slot.garbage.end(),std::make_move_iterator(garbage.begin()),std::make_move_iterator(garbage.end()));garbage.clear();
         perf.ringPeak=std::max<std::uint64_t>(perf.ringPeak,ringOffset);
@@ -4960,7 +5120,7 @@ public:
             ptxGatherOn=access(RECOMP_APP_PATH("/private-trace/diag-generic-no-ptx-gather"),F_OK)!=0; // v599
             GLOG("RENDER_GENERIC_PTX_FIX enabled=%u overrides=%zu applied=%u mismatched=%u why=%s gather=%u",unsigned(pl.enabled),std::size(PtxOverrides),pl.applied,pl.mismatched,pl.why,unsigned(ptxGatherOn));
         }
-        coIssueLoad(pack); // v593 (diag-generic-no-coissue-fix keeps the pack's modules): the co-issue hazard re-translations
+        coIssueLoad(pack);oceanRoundLoad(pack); // ocean-census: default-off ocean fetch rounding (ocean_round.h). v593 (diag-generic-no-coissue-fix keeps the pack's modules): the co-issue hazard re-translations
         post::tonemapOneOnly.store(access(RECOMP_APP_PATH("/private-trace/diag-fg-tonemap-one"),F_OK)==0,std::memory_order_relaxed); // fixer2: v576's single tonemap shader
         GLOG("RENDER_GENERIC_TONEMAP_FAMILY variants=%zu one=%u",std::size(post::TonemapVariants),unsigned(post::tonemapOneOnly.load(std::memory_order_relaxed)));
         rsLoad(); // fsr-modes: files/settings/render-scale.txt, once (before any image exists)
@@ -5045,8 +5205,29 @@ public:
             l.bindingCount=std::uint32_t(b.size());l.pBindings=b.data();
             if(vkCreateDescriptorSetLayout(d.device,&l,nullptr,&setLayouts[s])!=VK_SUCCESS)return false;
         }
+        { // v1303: the fold (see foldSets)
+            const bool forced=access(RECOMP_APP_PATH("/private-trace/diag-gpu-fold-sets"),F_OK)==0;
+            const bool off=access(RECOMP_APP_PATH("/private-trace/diag-gpu-fold-off"),F_OK)==0;
+            const std::uint32_t bindable=d.properties.limits.maxBoundDescriptorSets;
+            foldSets=!off && (bindable<6 || forced);
+            GLOG("RENDER_GPU_FOLD_SETS max_bound_sets=%u forced=%u off=%u fold=%u",bindable,unsigned(forced),unsigned(off),unsigned(foldSets));
+        }
+        if(foldSets) { // (v1304 layout)
+            constexpr VkShaderStageFlags st=VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT;
+            const std::array<VkDescriptorSetLayoutBinding,2> mb{{{0,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,HeapSlots,st,nullptr},{1,VK_DESCRIPTOR_TYPE_SAMPLER,HeapSlots,st,nullptr}}};
+            std::array<VkDescriptorSetLayoutBinding,3> rb{};
+            for(unsigned k=0;k<3;++k)rb[k]={k,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,HeapSlots,st,nullptr};
+            VkDescriptorSetLayoutCreateInfo l{};l.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;l.bindingCount=2;l.pBindings=mb.data();
+            if(vkCreateDescriptorSetLayout(d.device,&l,nullptr,&foldMainLayout)!=VK_SUCCESS)return false;
+            l.bindingCount=3;l.pBindings=rb.data();
+            if(vkCreateDescriptorSetLayout(d.device,&l,nullptr,&foldRareLayout)!=VK_SUCCESS)return false;
+            const std::array<VkDescriptorSetLayout,3> folded{foldMainLayout,foldRareLayout,setLayouts[4]};
+            VkPipelineLayoutCreateInfo pl{};pl.sType=VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;pl.setLayoutCount=3;pl.pSetLayouts=folded.data();
+            if(vkCreatePipelineLayout(d.device,&pl,nullptr,&layout)!=VK_SUCCESS)return false;
+        } else {
         VkPipelineLayoutCreateInfo pl{};pl.sType=VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;pl.setLayoutCount=6;pl.pSetLayouts=setLayouts.data();
         if(vkCreatePipelineLayout(d.device,&pl,nullptr,&layout)!=VK_SUCCESS)return false;
+        }
         {
             const unsigned sets=uboBanks?2u:1u; // v311: a second constant set per slot (the 16 KB ranges) on the uniform-block path
             const std::array<VkDescriptorPoolSize,2> dyn{{{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,(uboBanks?1u:3u)*FrameSlots*sets},
@@ -6007,7 +6188,13 @@ public:
     // descriptorSets() with v341b's shared dummy sets for the kinds the draw does not sample (the classification is draw()'s)
     std::array<VkDescriptorSet,5> descriptorSetsV341(const std::array<const Image*,HeapSlots>& images,const std::array<VkSampler,HeapSlots>& samps) {
         auto sets=descriptorSets(images,samps);
-        if(sets[0] && !v342Baseline)if(const auto ss=samplerSetV342(samps))sets[3]=ss; // v342
+        if(sets[0] && !v342Baseline && !foldSets)if(const auto ss=samplerSetV342(samps))sets[3]=ss; // v342 (v1304: folded, the samplers live in set 0)
+        if(foldSets) { // v1304: the shared dummy set 1 for a draw that samples no 2D-array, cube or 3D image
+            if(!sets[0] || v341bBaseline)return sets;
+            for(const auto* im:images)if(im && (im->volume || im->cube || im->layers>1 || im->array))return sets;
+            if(const auto dummy=foldRareDummySet()){sets[1]=sets[2]=sets[4]=dummy;++foldDummyUses;}
+            return sets;
+        }
         if(!sets[0] || v341bBaseline || !v341MakeDummySets())return sets;
         bool hasArray=false,hasCube=false,hasVolume=false;
         for(const auto* im:images)if(im) {
@@ -6034,7 +6221,7 @@ public:
             const Target* t=passTargets[i];
             if(b.t[i] || !t || ((colorMask>>(4*i))&15))return 0;
             const auto info=reg(state,infos[i]);
-            if(t->depth || t->base!=(info&0xFFF) || t->xenosFormat!=targetFormat((info>>16)&15) || t->pitch!=pitch ||
+            if(t->depth || t->base!=(info&0xFFF) || t->xenosFormat!=colorTargetKey(info) || t->pitch!=pitch || // (v1194: the exact key)
                t->residuePending || !t->pendingClears.empty()){++v338.target;return 0;}
             for(const auto* im:images)if(im && im->image==t->image.image){++v338.sampled;return 0;}
             added|=1u<<i;
@@ -6072,7 +6259,8 @@ public:
         for(unsigned i=0;i<4;++i) {
             if(!((colorMask>>(4*i))&15))continue;
             const auto info=reg(state,infos[i]);
-            b.t[i]=target(info&0xFFF,targetFormat((info>>16)&15),pitch,false,needHeight);
+            b.t[i]=target(info&0xFFF,colorTargetKey(info),pitch,false,needHeight); // (v1194: the exact key for a biased k_16_16_16_16)
+            if(b.t[i])const_cast<Target*>(b.t[i])->colorExpBias=recomp::gpu::generic::rawwords::colorExpBias(info); // v1194
         }
         if(wantDepth) {const auto info=reg(state,0x2002);b.t[4]=target(info&0xFFF,16+((info>>16)&1),pitch,true,needHeight);}
 #ifndef RECOMP_THOR_EDITION
@@ -7167,12 +7355,12 @@ public:
         }
         persistentOn=persistentWanted;
     }
-    bool allocatePersistent(std::array<VkDescriptorSet,5>& sets,const std::array<VkDescriptorSetLayout,5>& layouts) {
+    bool allocatePersistent(std::array<VkDescriptorSet,5>& sets,const std::array<VkDescriptorSetLayout,5>& layouts,std::uint32_t count=5) { // (v1303: count 2 folded)
         if(persistentFull)return false;
         for(int attempt=0;attempt<2;++attempt) {
             if(!persistentPools.empty() && persistentAllocated<std::uint64_t{PersistentPoolEntries}*persistentPools.size()) {
                 VkDescriptorSetAllocateInfo a{};a.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;a.descriptorPool=persistentPools.back();
-                a.descriptorSetCount=5;a.pSetLayouts=layouts.data();
+                a.descriptorSetCount=count;a.pSetLayouts=layouts.data();
                 if(vkAllocateDescriptorSets(d.device,&a,sets.data())==VK_SUCCESS){++persistentAllocated;return true;}
                 persistentAllocated=std::uint64_t{PersistentPoolEntries}*persistentPools.size(); // this pool is done
             }
@@ -7251,15 +7439,19 @@ public:
             return it->second.sets;
         }
         std::array<VkDescriptorSet,5> sets{};
-        const std::array<VkDescriptorSetLayout,5> layouts{setLayouts[0],setLayouts[1],setLayouts[2],setLayouts[3],setLayouts[5]};
-        const bool persistent=persistentOn && allocatePersistent(sets,layouts);
+        // v1303 folded: two sets (the image set, the samplers); the array then names the image set in every image entry
+        const std::array<VkDescriptorSetLayout,5> layouts=foldSets?std::array<VkDescriptorSetLayout,5>{foldMainLayout,foldRareLayout,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE}
+            :std::array<VkDescriptorSetLayout,5>{setLayouts[0],setLayouts[1],setLayouts[2],setLayouts[3],setLayouts[5]};
+        const std::uint32_t setCount=foldSets?2u:5u;
+        const bool persistent=persistentOn && allocatePersistent(sets,layouts,setCount);
         if(!persistent) {
             if(persistentOn)++persistentFallbacks;
             VkDescriptorSetAllocateInfo a{};a.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;a.descriptorPool=framePool;
-            a.descriptorSetCount=5;a.pSetLayouts=layouts.data();
+            a.descriptorSetCount=setCount;a.pSetLayouts=layouts.data();
             if(vkAllocateDescriptorSets(d.device,&a,sets.data())!=VK_SUCCESS){note("descriptor-sets-exhausted","frame");return {};}
-            res.setsUsed+=5;res.setsPeak=std::max(res.setsPeak,res.setsUsed); // v96 (the frame pool only: kept sets live in v78's pools)
+            res.setsUsed+=setCount;res.setsPeak=std::max(res.setsPeak,res.setsUsed); // v96 (the frame pool only: kept sets live in v78's pools)
         }
+        if(foldSets)sets={sets[0],sets[1],sets[1],sets[0],sets[1]}; // v1304: 2D and samplers in set 0, array / cube / 3D in set 1
         std::array<std::array<VkDescriptorImageInfo,HeapSlots>,5> info{};
         for(unsigned i=0;i<HeapSlots;++i) {
             const auto* im=images[i];const bool volume=im && im->volume,cube=im && im->cube,array=im && !im->cube && !volume && (im->layers>1 || im->array);
@@ -7270,7 +7462,8 @@ public:
             info[4][i]={VK_NULL_HANDLE,volume?im->view:dummy3D.view,VK_IMAGE_LAYOUT_GENERAL};
         }
         std::array<VkWriteDescriptorSet,5> w{};
-        for(unsigned s=0;s<5;++s){w[s].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;w[s].dstSet=sets[s];w[s].dstBinding=0;
+        for(unsigned s=0;s<5;++s){w[s].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;w[s].dstSet=sets[s];
+            w[s].dstBinding=!foldSets || s==0 || s==1?0u:s==3 || s==2?1u:2u; // v1304: set 0 = 2D (0), samplers (1); set 1 = array (0), cube (1), 3D (2)
             w[s].descriptorCount=HeapSlots;w[s].descriptorType=s!=3?VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:VK_DESCRIPTOR_TYPE_SAMPLER;w[s].pImageInfo=info[s].data();}
         vkUpdateDescriptorSets(d.device,5,w.data(),0,nullptr);
 #if defined(RECOMP_VKW_FLAT_SETS) // (vk-worker bit 4)
@@ -7315,6 +7508,13 @@ public:
             depthControl=colorMask=colorControl=0;blend={};stencilMasks=stencilMasksBack=0;spec=0;raster=0;psVariant=0;}
     };
     PipelineState pipelineState;
+    bool hsSkySkipOn=true,hsSkySkipLogged=false;std::uint64_t hsSkySkipDraws=0; // v1073; v1079: default ON, diag-hs-sky-skip-off restores
+    // v1695 (sky-fallback, PLAN U1): without a usable depth-bounds path the light-volume marking passes write stencil bits 5-6 only
+    // (sky_stencil_narrow.h). v1740 (lead 09:4x): skyNarrowOn is ON by default (from the first frame) and only the kill switch
+    // diag-sky-stencil-narrow-off turns it off; it acts only where depthBounds is unusable (no device feature: Mali / Xclipse), so a
+    // device with depthBounds (Thor, Fold) keeps v1711's depth-bounds path and pipelines. forceNoDepthBounds = diag-force-no-depth-bounds
+    // (TEST ONLY, default off): the renderer treats depthBounds as absent (no pipeline gets the depth-bounds test), as on a Mali device.
+    bool skyNarrowOn=true,forceNoDepthBounds=false,skyNarrowLogged=false;std::uint64_t skyNarrowDraws=0,skyNarrowFollowDraws=0;
     VkPipeline pipeline(const PipelineState& s,const PackEntry& vs,const PackEntry& ps,const Bound& b) {
         std::uint64_t key;
         if(wordKeys) { // v78: the same fields as v71's key, as 64-bit words (with the two list lengths)
@@ -7394,9 +7594,15 @@ public:
         VkPipelineDepthStencilStateCreateInfo ds{};ds.sType=VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         ds.depthTestEnable=b.t[4] && (dc&2);ds.depthWriteEnable=b.t[4] && (dc&4);ds.depthCompareOp=compareOp(dc>>4);
         ds.stencilTestEnable=b.t[4] && (dc&1);
+        if(b.t[4] && (s.raster&0x80000000u)){ds.depthBoundsTestEnable=VK_TRUE;ds.minDepthBounds=std::numeric_limits<float>::min();ds.maxDepthBounds=1.0f;} // v1073
         ds.front={stencilOp(dc>>11),stencilOp(dc>>14),stencilOp(dc>>17),compareOp(dc>>8),(s.stencilMasks>>8)&0xFF,(s.stencilMasks>>16)&0xFF,0};
         ds.back=((dc&0x80) && !(s.raster&16))?VkStencilOpState{stencilOp(dc>>23),stencilOp(dc>>26),stencilOp(dc>>29),compareOp(dc>>20),
             (s.stencilMasksBack>>8)&0xFF,(s.stencilMasksBack>>16)&0xFF,0}:ds.front;
+        // v1695 (sky_stencil_narrow.h): raster bit 30 = a one-sided light-volume marking pass on a device without a usable depth-bounds
+        // path: it writes stencil bits 5-6 only (back = front for these passes: the rule requires dc bit 7 clear).
+        if(b.t[4] && (s.raster&0x40000000u)){ds.front.writeMask=recomp::sky_stencil_narrow::kNarrowMask;ds.back.writeMask=recomp::sky_stencil_narrow::kNarrowMask;}
+        // raster bit 29 = the companion: a light's follow-up pass (EQUAL-type, reference within 0x60, read mask 0xFF) compares through 0x60
+        if(b.t[4] && (s.raster&0x20000000u)){ds.front.compareMask=recomp::sky_stencil_narrow::kNarrowMask;ds.back.compareMask=recomp::sky_stencil_narrow::kNarrowMask;}
         std::array<VkPipelineColorBlendAttachmentState,4> att{};unsigned colorCount=0;
         for(unsigned i=0;i<4;++i)if(b.t[i])colorCount=i+1;
         for(unsigned i=0;i<colorCount;++i) {
@@ -7442,7 +7648,8 @@ public:
         g.pDepthStencilState=&ds;g.pColorBlendState=&cb;g.pDynamicState=&dy;g.layout=layout;g.renderPass=renderPass(b,passKeyOf(b));
         const auto created=Clock::now();
         {
-            std::lock_guard lock(d.pipelineCacheMutex);
+            pwyield::DrawPathCreation pwUrgent; // prewarm-yield: the warm-up stands back while this creation waits or runs
+            std::lock_guard lock(d.pipelineCacheMutex);pwUrgent.acquired();
             if(vkCreateGraphicsPipelines(d.device,d.pipelineCache,1,&g,nullptr,&p)!=VK_SUCCESS)p=VK_NULL_HANDLE;
         }
         perf.pipelineNs+=nsSince(created);++perf.pipelinesCreated;
@@ -7530,8 +7737,10 @@ public:
 #if !defined(RECOMP_PW_MUTANT_NO_REWRITE) // host-test mutant: the fixed path keeps v149's module (no v294 rewrite)
         if(fix)return graphicsModule(rewritten.code->data(),rewritten.code->size()); // v294 (as variant())
 #endif
-        VkShaderModuleCreateInfo c{};c.sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;c.codeSize=rewritten.code->size()*4;
-        c.pCode=rewritten.code->data();
+        const std::uint32_t* code=rewritten.code->data();std::size_t words=rewritten.code->size();std::vector<std::uint32_t> folded;
+        if(!foldWords(code,words,folded))return VK_NULL_HANDLE; // v1303 (nothing while the layout is not folded)
+        VkShaderModuleCreateInfo c{};c.sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;c.codeSize=words*4;
+        c.pCode=code;
         VkShaderModule m=VK_NULL_HANDLE;if(vkCreateShaderModule(d.device,&c,nullptr,&m)!=VK_SUCCESS)m=VK_NULL_HANDLE;
         return m;
     }
@@ -7563,6 +7772,8 @@ public:
         g.pVertexInputState=&vi;g.pInputAssemblyState=&ia;g.pViewportState=&vp;g.pRasterizationState=&rs;g.pMultisampleState=&ms;
         g.pDepthStencilState=&ds;g.pColorBlendState=&cb;g.pDynamicState=&dy;g.layout=layout;g.renderPass=rp;
         VkPipeline p=VK_NULL_HANDLE;
+        if(pwyield::refresh()){char yl[400];pwyield::line(yl,sizeof yl,"flip");GLOG("%s",yl);} // prewarm-yield: the switch (A/B phases)
+        pwyield::beforePrewarmCompile(); // prewarm-yield (compileRecipe runs on the warm-up thread only)
         {std::lock_guard lock(d.pipelineCacheMutex);if(vkCreateGraphicsPipelines(d.device,d.pipelineCache,1,&g,nullptr,&p)!=VK_SUCCESS)p=VK_NULL_HANDLE;}
         if(p)vkDestroyPipeline(d.device,p,nullptr);
         return p!=VK_NULL_HANDLE;
@@ -7589,9 +7800,20 @@ public:
 #endif
         const bool pwFix=switchFile("diag-pw-fix");pwfix::state.fix=pwFix; // prewarm-fix (boot switch)
         GLOG("RENDER_DIAG_PW_STARTUP fix=%u",unsigned(pwFix));
+        { // prewarm-yield: default on; diag-pw-yield-off = off; re-read by the warm-up thread every 250 ms (in-run A/B)
+            auto& yst=pwyield::state();
+            yst.probe=+[]{return access(RECOMP_APP_PATH("/private-trace/diag-pw-yield-off"),F_OK)!=0;};
+            yst.on.store(yst.probe(),std::memory_order_release);
+            GLOG("RENDER_DIAG_PW_YIELD startup on=%u quiet_ms=%lld probe_ms=%lld",unsigned(yst.on.load()),
+                 (long long)(pwyield::QuietNs/1000000),(long long)(pwyield::ProbeNs/1000000));
+        }
         GLOG("RENDER_GENERIC_RECIPES on=1 files=%u recipes=%zu prewarm=%u",files,list->size(),unsigned(prewarm));
         if(!prewarm){prewarmDone=true;recomp::pcache::warmupFinished(0);return;} // (boot-stall: no warm-up in this run)
+        pwyield::state().warming.store(true,std::memory_order_release); // prewarm-yield: count draw-path creations from here to the warm-up's end
         std::thread([this,list,pwFix]{
+            // v1711 (prewarm_quiesce.h): every device call of this thread is inside enter()/leave(); V1620Revoke's quiesce() stops it
+            if(!recomp::gpu::prewarmq::enter()){GLOG("RENDER_GENERIC_PREWARM done=0 stopped=1 (the run ended before the warm-up began)");return;}
+            struct Leave{~Leave(){recomp::gpu::prewarmq::leave();}} prewarmLeave;
             cpu_set_t little;CPU_ZERO(&little);RECOMP_TOPOLOGY_ADD_CPUS(little,recomp_topology::roles().little); // topology lane: the little role (Thor: cpu0-2)
             (void)sched_setaffinity(0,sizeof little,&little);(void)setpriority(PRIO_PROCESS,int(gettid()),10);
             const auto t0=Clock::now();
@@ -7603,7 +7825,9 @@ public:
                 return modules[key]=prewarmModule(e,variant); // (prewarm-fix: the body moved, unchanged)
             };
             unsigned variantRecipes=0,variantModules=0; // prewarm-fix (RENDER_DIAG_PW_PREWARM)
+            bool stoppedEarly=false; // v1711
             for(const auto& r:*list) {
+                if(recomp::gpu::prewarmq::stopRequested()){stoppedEarly=true;break;} // v1711: the run is ending: no more compiles
                 const auto vsIt=shaders.find(r.vs);
                 const PackEntry* ps=nullptr;
                 if(r.psKind==recipes::PsNone)ps=&nullPixel;
@@ -7643,7 +7867,10 @@ public:
             prewarmNs=std::uint64_t(nsSince(t0));prewarmDone=true;recomp::pcache::warmupFinished(prewarmCompiled.load()); // boot-stall: the saver thread may now write the cache (it polls; nothing waits here)
             GLOG("RENDER_GENERIC_PREWARM done=1 recipes=%zu compiled=%u failed=%u skipped=%u ms=%.0f",list->size(),prewarmCompiled.load(),
                  prewarmFailed.load(),prewarmSkipped.load(),double(prewarmNs.load())*1e-6);
+            if(stoppedEarly)GLOG("RENDER_GENERIC_PREWARM stopped=1 at the run's end (v1711 quiesce) compiled=%u of %zu",prewarmCompiled.load(),list->size());
             GLOG("RENDER_DIAG_PW_PREWARM fix=%u variant_recipes=%u variant_modules=%u",unsigned(pwFix),variantRecipes,variantModules); // prewarm-fix
+            pwyield::state().warming.store(false,std::memory_order_release); // prewarm-yield: the A/B totals (draw-path creations during the warm-up)
+            {char yl[400];pwyield::line(yl,sizeof yl,"done=1");GLOG("%s",yl);}
         }).detach();
     }
 
@@ -8307,6 +8534,28 @@ public:
         if(hud14Cover)hud14Blend(s.blend,psHash,s.colorMask); // v649 (hud14): the box layer's alpha = coverage on the lower screen
 #endif
         s.stencilMasks=reg(state,0x210D);s.stencilMasksBack=reg(state,0x210C);
+        // v1073 (bugfix-stability; hs_sky_skip.h, diag-hs-sky-skip): the spot-light hi-stencil marking passes leave the pixels where
+        // nothing was drawn (stored depth = the cleared far 0) alone, as the console's hierarchical cull of empty sky tiles does, so
+        // they no longer zero the sky's stencil marker and the clouds keep their place under a street lamp (no cone hole). raster bit
+        // 31 = this pipeline gets the depth-bounds test.
+        // 2026-11-08 creator fix: + s.colorMask (stencil-only, no-depth-write passes only; the creator's peds were culled by v1079's rule).
+        // v1695: diag-force-no-depth-bounds makes the depth-bounds path unusable here (the device feature stays enabled but unused).
+        const bool depthBoundsUsable=!forceNoDepthBounds && recomp_depth_bounds_enabled.load(std::memory_order_relaxed);
+        if(hsSkySkipOn && recomp::hs_sky_skip::applies(depthControl,s.stencilMasks,reg(state,0x2203),s.colorMask,depthBoundsUsable)) {
+            s.raster|=0x80000000u;
+            if(const auto n=++hsSkySkipDraws;(n&(n-1))==0)GLOG("RENDER_HS_SKY_SKIP draws=%llu dc=%08x sref=%08x hiz=%08x",
+                (unsigned long long)n,depthControl,s.stencilMasks,reg(state,0x2203));
+        } else if(recomp::sky_stencil_narrow::applies(depthControl,s.stencilMasks,s.colorMask,skyNarrowOn,depthBoundsUsable)) {
+            // v1695 (sky-fallback; v1740: default on, kill switch): no depth bounds -> the marking pass writes stencil bits 5-6 only (raster bit 30)
+            s.raster|=0x40000000u;
+            if(const auto n=++skyNarrowDraws;(n&(n-1))==0)GLOG("RENDER_SKY_NARROW draws=%llu dc=%08x sref=%08x",
+                (unsigned long long)n,depthControl,s.stencilMasks);
+        } else if(skyNarrowOn && !depthBoundsUsable && recomp::sky_stencil_narrow::followUp(depthControl,s.stencilMasks,s.colorMask)) {
+            // v1695 companion: the light's follow-up pass (im#5v) compares through 0x60, as the narrowed marks leave low bits behind
+            s.raster|=0x20000000u;
+            if(const auto n=++skyNarrowFollowDraws;(n&(n-1))==0)GLOG("RENDER_SKY_NARROW follow_up draws=%llu dc=%08x sref=%08x",
+                (unsigned long long)n,depthControl,s.stencilMasks);
+        }
         // v85: the alpha test and alpha to mask as the Xenos applies them (xenos_alpha_state.h); v71 applied
         // every enabled function as GEQUAL (diag-generic-legacy-alpha).
         const float alphaRef=regFloat(reg(state,0x210E));
@@ -8708,7 +8957,15 @@ public:
         const bool v340Pipe=v339ZeroDraws && v340SkipPipe && recorded.pipeline && v340PipePass==passKey; // (v340 measurement)
         if(p!=recorded.pipeline && !v340Pipe){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p);recorded.pipeline=p;v340PipePass=passKey;}else ++perf.stateSkips;
         const bool v340Other=v339ZeroDraws && v340SkipOther && recorded.sets[0]; // (v340 measurement)
-        if(sets!=recorded.sets && !v340Other && !v341bBaseline) { // v341b: only the changed sets, one call per run of them
+        if(foldSets) { // v1304: set 0 = sets[0] (2D + samplers), set 1 = sets[1] (array / cube / 3D, usually the shared dummy set)
+            if(sets!=recorded.sets && !v340Other) {
+                if(sets[0]!=recorded.sets[0] && sets[1]!=recorded.sets[1]){const std::array<VkDescriptorSet,2> two{sets[0],sets[1]};
+                    vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,2,two.data(),0,nullptr);++v341.setCalls;v341.setBinds+=2;++foldBinds.two;}
+                else if(sets[0]!=recorded.sets[0]){vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&sets[0],0,nullptr);++v341.setCalls;++v341.setBinds;++foldBinds.main;}
+                else {vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,1,1,&sets[1],0,nullptr);++v341.setCalls;++v341.setBinds;++foldBinds.rare;}
+                recorded.sets=sets;
+            } else ++perf.stateSkips;
+        } else if(sets!=recorded.sets && !v340Other && !v341bBaseline) { // v341b: only the changed sets, one call per run of them
             for(unsigned s=0;s<4;) {
 #if defined(RECOMP_V341_MUTANT_SET0_ONLY) // harness mutant: only set 0 is ever re-bound (must differ)
                 if(s>0 && recorded.sets[0]){++s;continue;}
@@ -8732,7 +8989,7 @@ public:
 #else
         if(!(v339ZeroDraws && v340SkipConst && recorded.constantSet) && (v291Baseline || cset!=recorded.constantSet || dynamic!=recorded.dynamic)) { // (v340)
 #endif
-            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,4,1,&cset,3,dynamic.data());
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,foldSets?2u:4u,1,&cset,3,dynamic.data()); // (v1303: set 2 folded)
             recorded.constantSet=cset;recorded.dynamic=dynamic;++perf.constBinds;++(big?v311BigBinds:v311SmallBinds);
         } else ++perf.constBindSkips;
         if(streamCount) {
@@ -8769,8 +9026,9 @@ public:
             namespace mt=recomp::gpu::maptap;
             const unsigned seen=(mt::tabScissor(x0,y0,x1,y1,passWidth)?mt::SeenTab:0u)| // (v698 from v703: +-4, no exact x0)
                                 (x0==1 && mt::fullScissor(x0,y0,x1,y1,passWidth)?mt::SeenFull:0u)|(psHash==mt::BlurPs?mt::SeenBlur:0u)|
-                                (psHash==mt::TonemapPs?mt::SeenPost:0u);
+                                (psHash==mt::TonemapPs?mt::SeenPost:0u)|(psHash==mt::LoadingQuadPs?mt::SeenLoadingQuad:0u); // (v1109: the loading screen's quad)
             if(seen)mt::seenDrawn().fetch_or(seen,std::memory_order_relaxed);
+            mt::drawsSeen().fetch_add(1u,std::memory_order_relaxed); // v1109: this frame's draw count (a loading-screen frame is its quad alone)
             if((psHash==mt::MapTilePs || psHash==mt::MapVectorPs) && (seen&mt::SeenFull) && in.vertexConstants) { // v667: the pause map's projection
                 const auto* w=in.vertexConstants->data();
                 mt::machine().noteXform(regFloat(w[8*4+0]),regFloat(w[9*4+1]),regFloat(w[11*4+0]),regFloat(w[11*4+1]));
@@ -9311,7 +9569,7 @@ public:
         const auto surface=reg(state,0x2000);const unsigned pitch=surface&0x3FFF;
         const unsigned infos[4]{0x2001,0x2003,0x2004,0x2005};
         const auto info=depthSource?reg(state,0x2002):reg(state,infos[source]);
-        const unsigned base=info&0xFFF,format=depthSource?16+((info>>16)&1):targetFormat((info>>16)&15);
+        const unsigned base=info&0xFFF,format=depthSource?16+((info>>16)&1):colorTargetKey(info); // (v1194: the exact key)
         // Source: the exact target, unless a target of another format wrote the same EDRAM base and
         // pitch later (the hardware reads the newest bits there). v35 took the first alias in key order.
         Target* exact=nullptr;
@@ -9472,7 +9730,8 @@ public:
             g.pVertexInputState=&vi;g.pInputAssemblyState=&ia;g.pViewportState=&vp;g.pRasterizationState=&rs;g.pMultisampleState=&ms;
             g.pDepthStencilState=&ds;g.pColorBlendState=&cb;g.pDynamicState=&dy;g.layout=layout;g.renderPass=rp;g.subpass=0;
             const auto created=Clock::now();
-            {std::lock_guard lock(d.pipelineCacheMutex);if(vkCreateGraphicsPipelines(d.device,d.pipelineCache,1,&g,nullptr,&p)!=VK_SUCCESS)p=VK_NULL_HANDLE;}
+            {pwyield::DrawPathCreation pwUrgent; // prewarm-yield: a quad pipeline is made lazily, possibly at a hand-off (gated like the draw path)
+             std::lock_guard lock(d.pipelineCacheMutex);pwUrgent.acquired();if(vkCreateGraphicsPipelines(d.device,d.pipelineCache,1,&g,nullptr,&p)!=VK_SUCCESS)p=VK_NULL_HANDLE;}
             v361Stats.createNs+=nsSince(created);
         }
         if(p)++v361Stats.created;else ++v361Stats.failed;
@@ -9571,7 +9830,7 @@ public:
     }
     // v55: 1x, 32 bpp colour surfaces only (64 bpp tiles hold 40x16 pixels and MSAA tiles other sample
     // grids; those pairs are counted as unsupported, not approximated).
-    static bool sixtyFourBit(unsigned f){return f==5 || f==7 || f==15;}
+    static bool sixtyFourBit(unsigned f){return f==5 || f==7 || f==15 || f==recomp::gpu::generic::rawwords::ExactFixed16x4;} // (v1194: the exact key is 128-bit: kept out of residue / alias copies like the 64-bit ones)
     static edram::Surface surfaceOf(const Target& t){return {t.base&(edram::Tiles-1),t.pitch,t.edramRows,t.image.height};}
     // v55: a clear of `x` over `rect` (x's image coordinates) as the EDRAM sees it: every other colour surface
     // sharing those tiles is cleared at the same tile-local pixels. The same storage format keeps the clear
@@ -9666,14 +9925,17 @@ public:
         const auto shape=resolveShape(desc);
         if(mip>=shape.levels || slice>=shape.layers)return false; // (resolve() only places what fits)
         unsigned mode=0;
-        if(!noConvert){if(t.xenosFormat==3 && readFormat==2)mode=1;else if(t.xenosFormat==2 && readFormat==3)mode=2;}
+        // v1194: the head blend's raw-word resolve (resolve_raw_words.h): an exact copy of the shader's integers, written back as
+        // 16-bit words at every level it resolves (below); no conversion pass, no exponent.
+        const bool raw=!noConvert && recomp::gpu::generic::rawwords::rawResolve(t.xenosFormat,t.colorExpBias,resolveExp,desc.exponentBias,desc.format);
+        if(!noConvert && !raw){if(t.xenosFormat==3 && readFormat==2)mode=1;else if(t.xenosFormat==2 && readFormat==3)mode=2;}
         // v75: mode 3 = mode 1 with the 7e3 code left unquantized (hdrContinuous; generic_hdr7e3.hlsli).
         if(mode==1 && hdrContinuous)mode=3;
-        const int exponent=noConvert?0:std::clamp(resolveExp+desc.exponentBias,-32,32);
+        const int exponent=noConvert || raw?0:std::clamp(resolveExp+desc.exponentBias,-32,32);
         const bool convertible=convertPipeline && convertStorage;
         const bool convert=(mode || exponent) && convertible;
         if((mode || exponent) && !convertible)note("resolve-convert-unavailable");
-        if(!noConvert && !mode && t.xenosFormat!=readFormat){char b[24];std::snprintf(b,sizeof b,"%u-as-%u",t.xenosFormat,readFormat);note("resolve-reinterpret-copied",b);}
+        if(!noConvert && !mode && !raw && t.xenosFormat!=readFormat){char b[24];std::snprintf(b,sizeof b,"%u-as-%u",t.xenosFormat,readFormat);note("resolve-reinterpret-copied",b);}
         const auto format=convert?VK_FORMAT_R16G16B16A16_SFLOAT:t.image.format;
         // v40: 823C2970..823C2AB8 sets RB_COPY_DEST_INFO.copy_dest_swap when the destination's red
         // selector (fetch word 3 bits 1-3) is not X, so the texture in memory holds red and blue
@@ -9709,7 +9971,7 @@ public:
                 r.layers=shape.layers;r.levels=shape.levels;r.cube=shape.cube;r.levelsWritten=0;
             }
         }
-        r.mode=convert?mode:0;r.bakedExp=convert?desc.exponentBias:0;
+        r.mode=convert?mode:0;r.bakedExp=convert?desc.exponentBias:0;r.rawWords=raw;
         endPass(__LINE__);
         // v74: the destination level's extent (level 0 before v74).
         const unsigned lw=std::max(1u,r.width>>mip),lh=std::max(1u,r.height>>mip);
@@ -9765,7 +10027,12 @@ public:
         }
         // v75 writeback (v100: level 0 / layer 0 only: wb::layout describes the base level; v74's subresource resolves
         // write other levels and layers, which v71 skipped).
-        if(cw && ch && mip==0 && slice==0)queueWriteback(desc,key,r,std::uint32_t(dx),std::uint32_t(dy),cw,ch,swap,convert);
+        if(cw && ch && mip==0 && slice==0 && !raw)queueWriteback(desc,key,r,std::uint32_t(dx),std::uint32_t(dy),cw,ch,swap,convert);
+        // v1194: the raw-word resolve writes guest memory at its level (the DXT1's level: rawwords::rawFetch).
+        if(cw && ch && slice==0 && raw) {
+            queueWriteback(desc,key,r,std::uint32_t(dx),std::uint32_t(dy),cw,ch,swap,false,mip,true);
+            char b[40];std::snprintf(b,sizeof b,"mip=%u fmt=%u %ux%u",mip,desc.format,cw,ch);note("resolve-raw-words",b);
+        }
         if(cw && ch && mip==0 && slice==0 && !r.remaps.empty()){if(r.memory.known)refreshRemaps(r);else dropRemaps(r);} // v586: the new texels
         out=&r;return true;
     }
@@ -9785,7 +10052,7 @@ public:
         }
     }
     void queueWriteback(const XenosTextureDescription& desc,std::uint32_t key,const Resolved& r,std::uint32_t dx,std::uint32_t dy,
-                        std::uint32_t cw,std::uint32_t ch,bool swap,bool converted) {
+                        std::uint32_t cw,std::uint32_t ch,bool swap,bool converted,unsigned level=0,bool raw=false) { // (v1194: + level, raw)
         if(!resolveWriteback || !writer || !wb::sizeEligible(desc.format,std::uint64_t{desc.width}*desc.height,dataWriteback))return; // v613 (v75: > MaxWritebackTexels)
         if(writebackOnly1x1 && std::uint64_t{desc.width}*desc.height!=1)return; // v79's diag-generic-writeback-1x1-only (v100)
         const auto refuse=[&](const char* w){++wbStats.refused;note("resolve-writeback-refused",w);};
@@ -9793,7 +10060,11 @@ public:
         const auto source=writebackSource(r.image.format);
         if(source==wb::Source::None){char b[24];std::snprintf(b,sizeof b,"vkformat=%d",int(r.image.format));return refuse(b);}
         wb::Refusal why;
-        if(!wb::layout(desc.fetch,why)){char b[40];std::snprintf(b,sizeof b,"%s fmt=%u",wb::refusalName(why),desc.format);return refuse(b);}
+        const auto fetch=raw?recomp::gpu::generic::rawwords::rawFetch(desc.fetch):desc.fetch; // v1194
+        const auto l=wb::layout(fetch,why,level,raw);
+        if(!l){char b[40];std::snprintf(b,sizeof b,"%s fmt=%u%s",wb::refusalName(why),desc.format,raw?" raw":"");return refuse(b);}
+        // v1194: a level under the mip address publishes from it (the layout's offsets are from that level's storage address).
+        const std::uint32_t physical=l->plan.levels[level].storage.mips?physicalAddress(desc.mipAddress):key;
         auto& slot=slots[slotIndex];
         const VkDeviceSize bytes=VkDeviceSize{cw}*ch*wb::sourceBytes(source);
         const VkDeviceSize at=(slot.writebackUsed+15)&~VkDeviceSize{15};
@@ -9802,14 +10073,14 @@ public:
         }
         if(at+bytes>slot.writeback.size){++wbStats.dropped;note("resolve-writeback-dropped","slot-buffer-full");return;}
         endPass(__LINE__);
-        VkBufferImageCopy c{};c.bufferOffset=at;c.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+        VkBufferImageCopy c{};c.bufferOffset=at;c.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,level,0,1}; // (v1194: the level)
         c.imageOffset={std::int32_t(dx),std::int32_t(dy),0};c.imageExtent={cw,ch,1};
         hazards({r.image.image},{});
         vkCmdCopyImageToBuffer(cmd,r.image.image,VK_IMAGE_LAYOUT_GENERAL,slot.writeback.buffer,1,&c);
         VkMemoryBarrier m{};m.sType=VK_STRUCTURE_TYPE_MEMORY_BARRIER;m.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;m.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&m,0,nullptr,0,nullptr);
         slot.writebackUsed=at+bytes;
-        slot.writebacks.push_back({key,desc.fetch,source,dx,dy,cw,ch,swap,at,census.active?census.seq:0u});
+        slot.writebacks.push_back({physical,fetch,source,dx,dy,cw,ch,swap,at,census.active?census.seq:0u,level,raw}); // (v1194: physical, fetch, level, raw)
         ++wbStats.queued;
     }
     // Host-visible, preferably cached memory for readbacks (the present copy's choice, makeReadback).
@@ -9862,7 +10133,7 @@ public:
         completionsInProgress.fetch_add(1,std::memory_order_acq_rel);completionEpoch.fetch_add(1,std::memory_order_acq_rel);
         struct End {~End(){completionEpoch.fetch_add(1,std::memory_order_acq_rel);completionsInProgress.fetch_sub(1,std::memory_order_acq_rel);}} end;
         for(const auto& c:batch.list) {
-            wb::Refusal why;const auto l=wb::layout(c.copy.fetch,why);
+            wb::Refusal why;const auto l=wb::layout(c.copy.fetch,why,c.copy.level,c.copy.raw); // (v1194: + level, raw)
             if(!l){++out.delta.refused;continue;}
             // Only the bytes the rectangle's texels occupy are read and published (a tiled 1x1 64bpp texture's
             // level spans a whole 8 KB macro tile; its owner may hold less).
@@ -10316,16 +10587,16 @@ public:
             { // v74 (each file restores v71). v96: textureEvict is set by readResourceSwitches (the same file); the
               // budget fields report the policy in force (v96's unless diag-generic-v99-resources).
                 const bool sub=!has("diag-generic-no-subresource-resolve"),mipFp=!has("diag-generic-base-fingerprint"),
-                    evict=!has("diag-generic-no-texture-evict"),bypass=!has("diag-generic-no-resolved-bypass");
+                    evict=!has("diag-generic-no-texture-evict"),bypass=!has("diag-generic-no-resolved-bypass"),exact16=!has("diag-generic-no-exact-fixed16");
                 const bool base=has("diag-generic-v99-resources");
-                const bool changed74=sub!=subresourceResolves || mipFp!=mipFingerprint || evict!=textureEvict || bypass!=resolvedBypass;
+                const bool changed74=sub!=subresourceResolves || mipFp!=mipFingerprint || evict!=textureEvict || bypass!=resolvedBypass || exact16!=exactFixed16;
                 if(changed74 || mosaicCheck==1)
-                    GLOG("RENDER_GENERIC_V74_MODE subresource_resolves=%u mip_fingerprint=%u texture_evict=%u resolved_bypass=%u "
-                         "budget_mb=%llu count_budget=%zu max_allocations=%u policy=%s",unsigned(sub),unsigned(mipFp),unsigned(evict),unsigned(bypass),
+                    GLOG("RENDER_GENERIC_V74_MODE subresource_resolves=%u mip_fingerprint=%u texture_evict=%u resolved_bypass=%u exact_fixed16=%u "
+                         "budget_mb=%llu count_budget=%zu max_allocations=%u policy=%s",unsigned(sub),unsigned(mipFp),unsigned(evict),unsigned(bypass),unsigned(exact16),
                          (unsigned long long)((base?TextureBudgetBytes:limits.textureBytes)>>20),base?textureCountBudget():limits.textures,
                          unsigned(d.properties.limits.maxMemoryAllocationCount),base?"v74":"v96");
                 if(changed74){(bindings.clear(),++bindingsGen);(volumeBindings.clear(),++bindingsGen);++resolveEpoch;}
-                subresourceResolves=sub;mipFingerprint=mipFp;resolvedBypass=bypass;
+                subresourceResolves=sub;mipFingerprint=mipFp;resolvedBypass=bypass;exactFixed16=exact16;
             }
             // v86 (ui_texture_tracking.h): unlock invalidation and the Scaleform full-content check.
             const bool unlockOn=!has("diag-ui-no-unlock-invalidate"),fullOn=!has("diag-ui-sampled-fingerprint");
@@ -10366,6 +10637,19 @@ public:
                          unsigned(reuseOn),unsigned(rectOn),unsigned(earlyOn));
                 indexVertexOffset=offsetOn;fastSwap=swapOn;constantReuse=reuseOn;rectNoZero=rectOn;earlyPoolReset=earlyOn;
             }
+            { // v1079 (bugfix-stability; dawn A/B t-fmi-hs-on/off-20261108 passed): the sky skip is the default; the file
+              // diag-hs-sky-skip-off restores the earlier behaviour (cone holes in the clouds under street lamps).
+              const bool on=access(RECOMP_APP_PATH("/private-trace/diag-hs-sky-skip-off"),F_OK)!=0;
+              if(on!=hsSkySkipOn||!hsSkySkipLogged){hsSkySkipOn=on;hsSkySkipLogged=true;
+                GLOG("RENDER_HS_SKY_SKIP switch=%u default=on depth_bounds=%u",unsigned(on),unsigned(recomp_depth_bounds_enabled.load()));} }
+            { // v1695 (sky-fallback, PLAN U1): the no-depthBounds fallback, v1740: ON unless diag-sky-stencil-narrow-off (kill switch);
+              // diag-force-no-depth-bounds (TEST ONLY) = behave as a device without depthBounds (the Mali path on a device that has it).
+              const bool narrow=access(RECOMP_APP_PATH("/private-trace/diag-sky-stencil-narrow-off"),F_OK)!=0,
+                  noDb=access(RECOMP_APP_PATH("/private-trace/diag-force-no-depth-bounds"),F_OK)==0;
+              if(narrow!=skyNarrowOn||noDb!=forceNoDepthBounds||!skyNarrowLogged){skyNarrowOn=narrow;forceNoDepthBounds=noDb;skyNarrowLogged=true;
+                const bool db=recomp_depth_bounds_enabled.load();
+                GLOG("RENDER_SKY_NARROW switch=%u default=on kill=%u force_no_depth_bounds=%u depth_bounds=%u usable=%u",unsigned(narrow),unsigned(!narrow),unsigned(noDb),
+                     unsigned(db),unsigned(db && !noDb));} }
             const bool censusFile=access(RECOMP_APP_PATH("/private-trace/diag-frame-census"),F_OK)==0;
             if(censusFile && !census.latched && !census.active){census.armed=true;GLOG("RENDER_CENSUS armed (next frame)");}
 #ifdef RECOMP_THOR_EDITION
@@ -11145,6 +11429,10 @@ public:
              unsigned(targetedBarriers));
         GLOG("RENDER_DIAG_V294_MODULES ubo_banks=%u rewritten=%llu unbanked=%llu refused=%llu",unsigned(uboBanks),
              (unsigned long long)v294.rewritten,(unsigned long long)v294.unbanked,(unsigned long long)v294.refused);
+        if(foldSets){GLOG("RENDER_GPU_FOLD_BINDS layout=v1304 main=%.1f rare=%.1f both=%.1f dummy_uses=%.1f",foldBinds.main/f,foldBinds.rare/f,foldBinds.two/f,foldDummyUses/f);
+            foldBinds={};foldDummyUses=0;}
+        if(foldSets)GLOG("RENDER_GPU_FOLD_MODULES folded=%llu unchanged=%llu refused=%llu",(unsigned long long)v1303.folded,
+             (unsigned long long)v1303.unchanged,(unsigned long long)v1303.refused); // v1303 (only while folded)
         GLOG("RENDER_DIAG_V293 baseline=%u available=%u none_passes=%.1f store_passes=%.1f splits=%.2f framebuffers=%zu",unsigned(v293Baseline),
              unsigned(storeNoneAvailable()),v293.nonePasses/f,v293.storePasses/f,v293.splits/f,depthWroteLast.size());v293={};
         GLOG("RENDER_DIAG_V338 on=%u merged=%.1f slots=%.1f refused_area=%.2f refused_target=%.2f refused_sampled=%.2f passes=%.1f",unsigned(v338Merge),
@@ -12317,6 +12605,7 @@ private:
         // v178: a guest thread waiting for rendererMutex goes first (lockRenderer).
         for(unsigned k=0;guestWaiting.load(std::memory_order_acquire);++k){if(k<256)async::relax();else std::this_thread::yield();}
         std::lock_guard lock(rendererMutex);
+        const recomp::freezewatch::ItemScope fwItem(item.kind); // v965: the item the worker is in (freeze self-report)
 #if defined(__ANDROID__) || defined(__linux__)
         if(!placed){placed=true;applyCpuMask();}
         if(!(++cpuSample&63)){const int c=sched_getcpu();if(c>=0)++cpuHistogram[recomp_topology::roles().bucket(c)];} // topology lane: 0 slowest cluster, 1 other, 2 the prime cpu (Thor: 0-2 A510, 3-6 A715/A710, 7 X3)
@@ -13818,6 +14107,13 @@ std::uint64_t asyncPresentCalls=0;async::Clock::time_point asyncWindow=async::Cl
 void afterPresent() {
     if(!asyncFront)return;
     auto& r=*renderer;
+    { // v965 (DIAGNOSTIC): the freeze self-report's hooks (once) and its clock; the watchdog thread starts on the first present
+        auto& fws=recomp::freezewatch::state();
+        if(!fws.log){fws.device.store(static_cast<void*>(r.d.device),std::memory_order_release);
+            fws.status=[](void* dev,std::uint64_t f){return int(vkGetFenceStatus(static_cast<VkDevice>(dev),(VkFence)f));};
+            fws.log=[](const char* l){GLOG("%s",l);};}
+        recomp::freezewatch::presented();
+    }
     const bool on=r.asyncWanted && !r.census.active && !r.census.armed; // a census frame runs synchronously
     asyncOn.store(on,std::memory_order_release);
     constantSharing.store(r.constantReuse,std::memory_order_relaxed); // v123 (diag-generic-copy-constants)

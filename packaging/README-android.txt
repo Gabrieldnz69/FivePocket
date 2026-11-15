@@ -16,11 +16,16 @@ STEPS
 2. Install FivePocket-{version}.apk.
 3. Open the app and follow its first-run screen: it imports the package and your game files into its own storage.
 
-The app's About page shows app version 1.0.2-alpha-qol: that is this release's app ({version}); the next update
-gives the app the release's version number.
-
 Updating from a closed-alpha app: it was signed with another key, so it must be uninstalled first, and uninstalling
 deletes its saves. Copy your saves out first.
+
+NEW IN THIS UPDATE
+------------------
+- Touch controls: in the online world, a button in the top row opens the game's Interaction Menu with one tap.
+- This version asks Android for the vibration permission; there is no prompt.
+- Rebuild your package with this version's builder to get the new features.
+- Updating from 1.1.0-alpha.1: install this app over the old one. Do not uninstall first: uninstalling deletes your
+  saves.
 
 NEVER SHARE WHAT YOU BUILD
 --------------------------

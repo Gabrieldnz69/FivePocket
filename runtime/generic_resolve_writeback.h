@@ -16,6 +16,7 @@
 // (x, y) of level 0 at tex::blockAddress, bytes endian-swapped by the fetch's endian field (memory
 // byte k ^ swap holds little-endian texel byte k, the decoder's rule read backwards).
 #include "generic_texture_decode.h"
+#include "resolve_raw_words.h" // v1194: the head blend's raw 16-bit block words
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -39,7 +40,7 @@ inline unsigned sourceComponents(Source s) {
 }
 // Destination formats written back: float formats (bit-exact from a same-width source, converted
 // between half and float otherwise) and k_8_8_8_8 from an 8888 source.
-struct Destination {unsigned components=0,bits=0;bool unorm8=false;};
+struct Destination {unsigned components=0,bits=0;bool unorm8=false;bool raw=false;}; // v1194 raw: 16-bit words rawwords::word(value)
 inline Destination destinationOf(unsigned format) {
     switch(format) {
     case 36: return {1,32};             // k_32_FLOAT
@@ -103,10 +104,10 @@ template<class W> inline std::vector<bool> superseded(const std::vector<W>& list
         const auto& a=list[i];const auto& b=list[j];
 #if !defined(RECOMP_V613_MUTANT_KEEP_FIRST)
         out[i]=a.physical==b.physical && a.fetch==b.fetch && a.source==b.source && a.swap==b.swap && a.x==b.x && a.y==b.y &&
-               a.w==b.w && a.h==b.h;
+               a.w==b.w && a.h==b.h && a.level==b.level && a.raw==b.raw; // (v1194: + level, raw)
 #else // test mutant: the later entry is dropped instead of the earlier one (publishes a stale resolve)
         if(a.physical==b.physical && a.fetch==b.fetch && a.source==b.source && a.swap==b.swap && a.x==b.x && a.y==b.y &&
-           a.w==b.w && a.h==b.h)out[j]=true;
+           a.w==b.w && a.h==b.h && a.level==b.level && a.raw==b.raw)out[j]=true;
 #endif
     }
     return out;
@@ -119,16 +120,18 @@ inline const char* refusalName(Refusal r) {
 }
 
 // Bytes [0, span) from the destination's base address hold level 0 (rounded up to 4 bytes).
-struct Layout {tex::Plan plan;Destination dst;std::uint32_t span=0;};
-inline std::optional<Layout> layout(const std::array<std::uint32_t,6>& fetch,Refusal& why) {
+// v1194: `level` = the guest level the resolve wrote (its bytes from the storage's address: the base for 0, the mip address
+// for the others); `raw` = rawwords' 16-bit word destination (format 26 only, from rawwords::rawFetch).
+struct Layout {tex::Plan plan;Destination dst;std::uint32_t span=0;unsigned level=0;};
+inline std::optional<Layout> layout(const std::array<std::uint32_t,6>& fetch,Refusal& why,unsigned level=0,bool raw=false) {
     why=Refusal::None;
     tex::Refusal r;auto p=tex::plan(fetch,r);
-    if(!p || p->levels.empty() || p->levels[0].absent || p->dim!=tex::Dim::TwoD || p->layers!=1){why=Refusal::Plan;return std::nullopt;}
-    const auto dst=destinationOf(p->desc.format);
+    if(!p || level>=p->levels.size() || p->levels[level].absent || p->dim!=tex::Dim::TwoD || p->layers!=1){why=Refusal::Plan;return std::nullopt;}
+    const auto dst=raw?(p->desc.format==26u?Destination{4,16,false,true}:Destination{}):destinationOf(p->desc.format);
     if(!dst.components || p->format.blockW!=1 || p->format.blockBytes*8u!=dst.components*dst.bits){why=Refusal::Format;return std::nullopt;}
-    const auto end=tex::levelEnd(*p,p->levels[0]);
+    const auto end=tex::levelEnd(*p,p->levels[level]);
     if(!end || end>(1u<<20)){why=Refusal::Span;return std::nullopt;}
-    Layout l;l.plan=*p;l.dst=dst;l.span=std::uint32_t((end+3)&~std::uint64_t{3});
+    Layout l;l.plan=*p;l.dst=dst;l.span=std::uint32_t((end+3)&~std::uint64_t{3});l.level=level;
     return l;
 }
 
@@ -137,6 +140,10 @@ inline float halfBitsToFloat(std::uint16_t h){return tex::fromHalf(h);}
 inline std::uint32_t component(Source s,const std::uint8_t* texel,unsigned c,const Destination& d) {
     if(s==Source::RGBA8)return texel[c]; // only to k_8_8_8_8 (checked by the caller)
     const bool half=s==Source::R16F || s==Source::RG16F || s==Source::RGBA16F;
+    if(d.raw) { // v1194: the value as its 16-bit word
+        float f;if(half){std::uint16_t h;std::memcpy(&h,texel+2*c,2);f=halfBitsToFloat(h);}else std::memcpy(&f,texel+4*c,4);
+        return rawwords::word(f);
+    }
     if(half) {
         std::uint16_t h;std::memcpy(&h,texel+2*c,2);
         if(d.bits==16)return h;
@@ -154,7 +161,7 @@ inline std::uint32_t component(Source s,const std::uint8_t* texel,unsigned c,con
 struct OffsetTable {bool tiled=false;unsigned bytes=0,pitch=0,rows=0,ox=0,oy=0,w=0,h=0;std::uint64_t offset=0,lo=0,hi=0;
                     std::vector<std::uint32_t> at;};
 inline const OffsetTable* texelOffsets(const Layout& l) {
-    const auto& p=l.plan;const auto& v=p.levels[0];const auto& s=v.storage;
+    const auto& p=l.plan;const auto& v=p.levels[l.level];const auto& s=v.storage;
     if(p.dim!=tex::Dim::TwoD || p.format.blockW!=1 || p.format.blockH!=1 || std::uint64_t{v.width}*v.height>65536u)return nullptr;
     thread_local std::array<OffsetTable,4> cache{};thread_local unsigned next=0;
     for(const auto& e:cache)
@@ -175,7 +182,7 @@ inline const OffsetTable* texelOffsets(const Layout& l) {
 // The 4-byte-aligned byte range [first, second) of the destination the rectangle's texels occupy (the
 // endian swap stays inside each aligned word): what a publication has to cover.
 inline std::pair<std::uint32_t,std::uint32_t> touched(const Layout& l,unsigned x0,unsigned y0,unsigned w,unsigned h) {
-    const auto& p=l.plan;const auto& level=p.levels[0];
+    const auto& p=l.plan;const auto& level=p.levels[l.level];
     if(x0==0 && y0==0 && w==level.width && h==level.height && w && h) // v613: the whole level (memoised range)
         if(const auto* t=texelOffsets(l)) {
             const std::uint64_t lo=t->lo&~std::uint64_t{3},hi=std::min<std::uint64_t>((t->hi+3)&~std::uint64_t{3},l.span);
@@ -201,7 +208,7 @@ inline std::pair<std::uint32_t,std::uint32_t> touched(const Layout& l,unsigned x
 inline std::optional<unsigned> writeReference(const Layout& l,Source source,const std::uint8_t* texels,std::size_t rowBytes,
                                      unsigned x0,unsigned y0,unsigned w,unsigned h,bool swapRB,std::vector<std::uint8_t>& guest,Refusal& why) {
     why=Refusal::None;
-    const auto& p=l.plan;const auto& d=l.dst;const auto& level=p.levels[0];
+    const auto& p=l.plan;const auto& d=l.dst;const auto& level=p.levels[l.level];
     const unsigned stride=sourceBytes(source);
     // v668: a single-component k_8 destination from an 8888 source takes the component the destination's view samples
     // (copyColor: view[0] = 2 with copy_dest_swap, else 0; the renderer keeps EDRAM order in the image).
@@ -243,7 +250,7 @@ inline std::optional<unsigned> writeReference(const Layout& l,Source source,cons
 inline std::atomic<bool> referenceWrite{false}; // diag-v278-baseline
 inline std::optional<unsigned> write(const Layout& l,Source source,const std::uint8_t* texels,std::size_t rowBytes,
                                      unsigned x0,unsigned y0,unsigned w,unsigned h,bool swapRB,std::vector<std::uint8_t>& guest,Refusal& why) {
-    const auto& p=l.plan;const auto& d=l.dst;const auto& level=p.levels[0];
+    const auto& p=l.plan;const auto& d=l.dst;const auto& level=p.levels[l.level];
     const unsigned n=sourceComponents(source),stride=sourceBytes(source);
     const bool half=source==Source::R16F || source==Source::RG16F || source==Source::RGBA16F;
     const unsigned srcComponentBytes=source==Source::RGBA8?1u:half?2u:4u;
@@ -258,7 +265,7 @@ inline std::optional<unsigned> write(const Layout& l,Source source,const std::ui
             for(std::size_t i=0;i<count;++i)guest[at[i]^x4]=texels[i*4+c];
             return w*h;
         }
-    const bool direct=!referenceWrite.load(std::memory_order_relaxed) && n && n==d.components && d.unorm8==(source==Source::RGBA8) &&
+    const bool direct=!referenceWrite.load(std::memory_order_relaxed) && !d.raw && n && n==d.components && d.unorm8==(source==Source::RGBA8) &&
                       srcComponentBytes==componentBytes && texelBytes==stride && texelBytes>=4 && texelBytes%4==0 && texelBytes<=16;
     if(!direct)return writeReference(l,source,texels,rowBytes,x0,y0,w,h,swapRB,guest,why);
     why=Refusal::None;

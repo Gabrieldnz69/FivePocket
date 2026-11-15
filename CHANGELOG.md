@@ -4,7 +4,74 @@ One version number covers every edition and every download of a release (the app
 the source archive). Format: [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [1.1.0-alpha.1] - unreleased
+## [1.1.5] - unreleased
+
+The first update. The new features need game code made with this version's builder: rebuild your package (Android) or
+your app (iOS, Duo) from your discs with the 1.1.5 builder. With older game code, the new rows say "Not available in this
+version."
+
+### Added
+- **Sandbox** (Thor Edition): a second choice on the Play tab, next to Story Mode. Free roam on its own save, copied from
+  your story saves the first time; your story saves are never changed. Story missions are held back and the trainer is
+  always on. Sandbox needs at least one story save. To switch between Story Mode and Sandbox, close the game first.
+  The single-screen app has the same Sandbox; it was tested on the Thor.
+- **GTA Online's world, offline, in Sandbox** (Thor Edition): the side menu's Online tab takes you into the online mode's
+  world. Everything runs on the device; nothing connects to any online service. Tested on the Thor: free roam, the race
+  tutorial, the phone and its apps (including Snapmatic), and the game's own Interaction Menu by holding Select. What you
+  buy (clothes, haircuts, Ammu-Nation, cars) is still there after a restart.
+- **Switch Character** in Sandbox (Thor Edition, experimental): play as Michael, Franklin or Trevor, outdoors, right where
+  you stand.
+- **Sandbox** (iOS): the same Play tab choice; it plays on its own copy of your story saves and never changes them.
+- **Vibration** (Off / Light / Full): the game's rumble. Thor Edition: on the device, Settings > Controls > Vibration.
+  iOS: side menu > Settings > Controls > Vibration.
+- **Performance presets** (iOS): Battery (30 fps cap) and Max (60 fps cap) set the frame rate cap and render resolution
+  together. A preset never changes the World rows.
+- **Mods** (iOS): a warning when the game stopped last time with mods on, and Start Once Without Mods; add a mod as a
+  folder or a zip file from the device.
+- **Interaction Menu button** (FivePocket, touch controls): in the online world, a button in the top row of the touch
+  controls opens the game's Interaction Menu with one tap. Checked on the Fold4.
+
+### Changed
+- Thor Edition: **Hold Select Opens Menu** is now Off by default, so holding Select in the online world opens the game's own
+  Interaction Menu. The side menu still opens with its touch gesture; turn the setting back on in Settings > Controls.
+- The Play tab's first item is called Story Mode wherever Sandbox is offered.
+- Android: the apps now ask for the vibration permission. Android grants it at install time and shows no prompt.
+- Android: the apps report the release's version number, 1.1.5 (About page and Android's app info).
+
+### Fixed
+- Explosions: fireballs, smoke and most fire now appear (they never drew before). Checked on the Thor and the Fold4.
+- Samsung phones whose picture froze while the sound went on (reported on Exynos / Xclipse phones): when the graphics
+  driver stops answering, the game now switches to its backup drawing path instead of freezing the picture. Tested on the
+  Thor by forcing that stop; not yet confirmed on an affected Samsung phone, so a log from one helps.
+- Holes in the clouds on phones whose GPU lacks one depth feature (Mali, Xclipse): the Thor showed the holes with that
+  feature switched off, and the new fallback removed them. The fallback only acts on phones without the feature.
+- Ocean water near the beach could break up on GPUs that round texture reads slightly low: the two ocean shaders no longer
+  read exactly on pixel edges. Tested on the Thor with that rounding forced; not yet tested on an affected phone.
+- Controllers: the right stick turns the camera on pads whose sticks the app read from the wrong axes (the camera did not
+  turn, or turned on its own). Checked on the Thor and the Fold4.
+- FivePocket (single screen): camera swipes on the touch screen turn the view directly and evenly. Checked on the Fold4.
+- Thor Edition, tested on the AYN Thor (the single-screen app uses the same game code, not re-tested with this build):
+  - Sandbox online world: barber, clothes, Ammu-Nation, cash and bought-car purchases now survive a restart.
+  - Los Santos Customs: a change bought for your own car is saved when you leave the shop and is still there after a restart.
+  - Sandbox online world: the character starts with the weapons and ammo the game saved, not a full set that replaced them.
+  - Connecting or disconnecting headphones no longer stops the game; the sound moves to the new output (tested with a
+    simulated route change; a real Bluetooth change is not yet tested on this build).
+  - After an error stop the app shows its stop message instead of crashing a few seconds later.
+
+### Known issues
+- Clothes shop (online world): after buying, backing out can leave the shop menu stuck. Use the trainer's teleport to get
+  out.
+- Los Santos Customs: after you leave, the car may not drive. Get out and back in, or use the trainer.
+- Deathmatches and other jobs can hang when you select them.
+- The Interaction Menu's header picture can look smeared.
+- Finishing a race can crash the game.
+
+### Upgrade note
+- Android: install the new app over the old one. Do not uninstall first, because uninstalling deletes your saves.
+- Android: rebuild your package with the 1.1.5 builder; the 1.1.5 app accepts only the 1.1.5 package.
+- iOS and Duo: re-sign with the same bundle identifier, as for every update. Your imported files and saves stay.
+
+## [1.1.0-alpha.1] - 2026-11-06
 
 First public release. In this release the Android apps still report their own app versions: FivePocket shows
 1.0.2-alpha-qol and FivePocket Thor Edition shows 1.0.3-alpha-thor (About page and Android's app info). Both are the apps

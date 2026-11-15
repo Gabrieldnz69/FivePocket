@@ -199,6 +199,32 @@ class Release(unittest.TestCase):
             self.assertEqual(places[member], 'host-tools/dxc/' + member)
         self.assertEqual(sorted(places), sorted(terms + ['bin/x64/dxc.exe', 'bin/x64/dxcompiler.dll', 'bin/x64/dxil.dll']))
 
+    def test_a_windows_on_arm_release_lays_native_compiler_programs_over_the_ndk(self):
+        # 2026-11-11: the NDK publishes x64 compiler programs only; the Windows on ARM release carries native ones (one
+        # clang for both names) and pins each over the NDK file it replaces; without them such a release is refused.
+        program = self.package / 'host-tools/compiler-arm64/clang.exe'
+        program.parent.mkdir(parents=True); program.write_bytes(b'SYNTHETIC native clang')
+        bin_ = 'toolchains/llvm/prebuilt/windows-x86_64/bin/'
+        overlay = [dict(path='host-tools/compiler-arm64/clang.exe', replaces=bin_ + 'clang.exe'),
+                   dict(path='host-tools/compiler-arm64/clang.exe', replaces=bin_ + 'clang++.exe')]
+        release = self.make(compiler_overlay=overlay)
+        pinned = dict(sha256=db.sha256_file(program), size=program.stat().st_size)
+        self.assertEqual(release['compiler_overlay'], {'files': [dict(entry, **pinned) for entry in overlay]})
+        self.assertEqual(builder.load_release(self.out)[0]['compiler_overlay'], release['compiler_overlay'])   # the consumer's reader
+        self.out.unlink()
+        self.refused('native compiler program is not a file of the package: host-tools/absent.exe',
+                     compiler_overlay=[dict(path='host-tools/absent.exe', replaces=bin_ + 'clang.exe')])
+        self.refused('replaces .*clang.exe twice', compiler_overlay=overlay[:1] * 2)
+        self.refused('a Windows on ARM release needs its native compiler programs', host='win32-arm64')
+        named = self.package.parent / 'overlay.json'; named.write_text(json.dumps(overlay), encoding='utf-8')
+        argv = ['--package', str(self.package), '--host', builder.host_id(), '--profile', 'profile/profile.json', '--python', 'python/python.exe',
+                '--ndk-url', NDK['url'], '--ndk-sha256', NDK['sha256'], '--ndk-size', '10', '--ndk-directory', NDK['directory'],
+                '--ndk-unpacked-bytes', '100', '--min-free-bytes', str(1 << 30), '--compiler-overlay', str(named)]
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(mr.main(argv), 0)
+        self.assertIn('2 native compiler programs over the NDK', said.getvalue())
+        self.assertEqual(json.loads(self.out.read_text(encoding='utf-8'))['compiler_overlay'], release['compiler_overlay'])
+
     def test_a_macos_release_names_the_ndk_folder_inside_the_disk_image(self):
         dmg = dict(NDK, url='https://dl.google.com/android/repository/android-ndk-r27c-darwin.dmg')
         with self.assertRaisesRegex(ValueError, 'image root not declared'):

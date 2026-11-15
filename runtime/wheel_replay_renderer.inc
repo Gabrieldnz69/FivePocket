@@ -171,8 +171,8 @@ void povPresent(const Image& shown,unsigned pw,unsigned ph) noexcept {
         if(FILE* f=std::fopen(RECOMP_APP_PATH("/private-trace/diag-phone-pov"),"r")){char b[256]{};const auto n=std::fread(b,1,sizeof b-1,f);b[n]=0;std::fclose(f);pp::parse(b,p);}
         povParams=p;
     }
-    const auto* base=recomp::gpu::hud::guestBase().load(std::memory_order_acquire);
-    const auto ctx=base?recomp::touchctx::read(recomp::touchctx::GuestMemory{base}).context:recomp::touchctx::None;
+    const auto ctx=[]{const recomp::gpu::hud::GuestLease l;const auto* base=l.base(); // v1670: the context read holds the guest-memory lease
+        return base?recomp::touchctx::read(recomp::touchctx::GuestMemory{base}).context:recomp::touchctx::None;}();
     const bool car=ctx!=recomp::touchctx::None && ctx!=recomp::touchctx::Foot;
     const auto c=pp::choose(povParams,car,pw,ph,phoneScreenW);
     if(c.src.empty() || c.dst.empty() || std::uint32_t(c.dst.x1)>phoneImage.width || std::uint32_t(c.dst.y1)>phoneImage.height){povDst={};return;}
@@ -185,6 +185,7 @@ void povPresent(const Image& shown,unsigned pw,unsigned ph) noexcept {
     if(!povLogged || car!=povCar){povLogged=true;povCar=car;GLOG("RENDER_PHONE_POV car=%u src=%d,%d..%d,%d dst=%d,%d..%d,%d frame=%ux%u blits=%llu",unsigned(car),
         c.src.x0,c.src.y0,c.src.x1,c.src.y1,c.dst.x0,c.dst.y0,c.dst.x1,c.dst.y1,pw,ph,(unsigned long long)povBlits);}
 }
+std::uint64_t phoneObserved=0;bool phoneOneWas=false; // v1600
 wheelrep::PhoneTracker phoneT;Image phoneImage;std::vector<Image> phoneRetired;std::uint64_t phoneSkipped=0,phoneCaptures=0,phoneMisses=0;bool phoneLogged=false,phoneWas=false;
 void phoneCapture(const std::array<std::array<std::uint32_t,6>,32>& fetch,std::uint32_t fetchMask) {
     phoneT.screen();
@@ -236,9 +237,12 @@ bool textCopyDraw(const DrawInput& in,const std::array<std::array<std::uint32_t,
     return ok;
 }
 void textPresent() noexcept {
-    const auto* base=recomp::gpu::hud::guestBase().load(std::memory_order_acquire);
+    std::optional<recomp::gpu::hud::GuestLease> textLease;textLease.emplace(); // v1670: the state read holds the guest-memory lease
+    const auto* base=textLease->base();
     if(!base)return;
     const auto s=recomp::gpu::hud::readTextState(recomp::gpu::hud::GuestMemory{base});
+    textLease.reset(); // (v1670: released before the log line; base is not read again)
+    recomp::phonecall::setHelp(s.help); // v1601: recomp_phone_state_v1 bit 3 (the touch pad's contextual D-pad)
     if(s.help!=textHelp || s.message!=textMsg) {
         if(s.message && !textMsg && textCensusOn && textCensuses<TextCensusMax){textCensusPending=true;++textCensuses;} // (v820, diagnostic)
         textHelp=s.help;textMsg=s.message;GLOG("RENDER_TEXT help=%u message=%u replays=%llu broken=%llu census=%u",unsigned(s.help),unsigned(s.message),
@@ -248,7 +252,9 @@ void textPresent() noexcept {
 void phonePresent() noexcept {
     textPresent(); // (v817)
     phoneT.present();
-    const bool up=phoneT.up() && phoneWanted();
+    const bool one=!recomp::gpu::hud2::screen().wanted(); // v1600: one screen (no lower screen): the observed phone counts
+    const bool up=phoneT.up() && (phoneWanted() || one);
+    if(one && up!=phoneOneWas){phoneOneWas=up;GLOG("RENDER_PHONE_ONE up=%u observed=%llu",unsigned(up),(unsigned long long)phoneObserved);} // v1600
     recomp::gpu::maptap::machine().setPhone(up);
     recomp::phonecall::setUp(up); // v852 (recomp_phone_state_v1 bit 0)
     if(!up)recomp::gpu::maptap::machine().setPhoneSel(-1); // (v834)
@@ -359,9 +365,15 @@ void wheelExecuteHeld(const char* why="",const wheelrep::Op* by=nullptr,bool rad
                                  const std::vector<AsyncSpan>& spans,const std::vector<std::vector<std::uint8_t>>& owned) noexcept {
     if(!in.stateBytes)return false;
     const bool ww=wheelWanted(),rw=radioWanted(),cw=charWanted(),pw=phoneWanted(),tw=textFrameOn && textWanted(); // (v651: each wheel its own setting; thor-char: cw; v815: pw; v818: tw)
+    // v1600 (android-qol, the Fold): one screen - no lower screen wants the phone, so pw is false and recomp_phone_state_v1 bit 0 never
+    // rose: the app's PHONE pad (SPEC 3.15) never came up on the Fold (run-v1509-11110507: the phone open, the touch overlay still PLAY).
+    // Observe only: the phone SCREEN draw (PhoneScreenPs) on the main frame marks it up; every draw is kept. Asked only while D-pad UP
+    // was read within PhoneUpGraceMs or the screen was seen within PhoneActiveFrames, so nothing changes for a frame without the phone.
+    const bool po=!pw && !wheelOff && !census.active && !census.armed && !recomp::gpu::hud2::screen().wanted()
+                  && phoneT.active(wheelrep::phoneUpRecentOne(wheelNowMs())); // (v1602: 3 s, see wheel_replay.h)
     if(!ww && wheelC.held()){wheelC.fail();wheelExecuteHeld("unwanted");} // (the setting / the screen went away mid-frame)
     if(!rw && radioC.heldOps()){radioC.fail();wheelExecuteHeld("unwanted",nullptr,true);}
-    if(!ww && !rw && !cw && !pw && !tw)return false;
+    if(!ww && !rw && !cw && !pw && !tw && !po)return false;
     if((be32(in.stateBytes+Hud4SurfaceInfo)&0x3FFFu)!=hudrep::MainPitch)return false; // (the common case: not the main frame)
     bool radioActor=false;
     try {
@@ -377,6 +389,7 @@ void wheelExecuteHeld(const char* why="",const wheelrep::Op* by=nullptr,bool rad
             const auto pa=wheelrep::phoneAct(o.ps,sc,phoneT.active(wheelrep::phoneUpRecent(wheelNowMs())));
             if(pa!=wheelrep::PhoneAct::Draw){if(pa==wheelrep::PhoneAct::SkipCapture)phoneCapture(fetch,fetchMask);++phoneSkipped;return true;}
         }
+        if(po && o.main && o.ps==wheelrep::PhoneScreenPs){phoneT.screen();++phoneObserved;} // v1600: one screen, observed (the draw stays)
         if(tw && !textBroken && wheelrep::textCopy(o,true)) { // v818: the help box (copied; drawn on the main frame as well)
             if(textList.n>=wheelrep::TextMaxOps || !textCopyDraw(in,fetch,fetchMask,spans,owned))textBroken=true;
         }

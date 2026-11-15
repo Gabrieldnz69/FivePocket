@@ -69,6 +69,10 @@ inline recomp::gpu::DrawBinState currentBins; // Kick bin words seen before the 
 // retained registers whenever those change (a qualified path executed a newer write).
 inline std::uint32_t scratchAddr=0,scratchMask=0,retainedScratchAddr=UINT32_MAX,retainedScratchMask=UINT32_MAX;
 inline bool tailSkipped=false;inline std::uint32_t skippedTailContext=0; // v689: set by the dispatch for a second-pass tail.
+// v1198: v1197's ring of the last 16 retired submissions, at namespace scope so the freeze report dumps it (v1197 dumped it only from
+// the retire walk, which a stuck counter never reaches again: t-onlshow-20261109-0001 froze with 11152 = 1 and no TAILSTUCK line).
+struct TailRec {std::uint32_t write,prev,c48,c52,c60;unsigned short irqs,ran,skipped,failed;bool deferred;};
+inline TailRec tailRing[16]{};inline unsigned tailRingAt=0;
 inline std::uint32_t skippedTailScratch=0; // v700: the tail request's own scratch block (physical).
 
 struct Stats {unsigned long long scratch=0,packets=0,ibs=0,draws=0,viz=0,zpd=0,shd=0,memWrites=0,interrupts=0,waits=0,regToMem=0,unknown=0,noops=0,ibFailures=0,pfd=0,type1=0,ext=0;};
@@ -571,6 +575,36 @@ inline bool retire(Registry& registry,recomp::bootstrap::GuestAddressSpace& spac
             const auto scratch=[&](unsigned slot,std::uint32_t v){auto* p=skippedTailScratch?space.translate(0xA0000000u+skippedTailScratch+slot*4):nullptr;if(!p){++failures;return;}put(p,v,2);};
             scratch(0,4);scratch(4,0x836BE1C8u);scratch(5,skippedTailContext);scratch(4,0x0BADF00Du);++irqSkipped;
         } else ++irqFailed;
+    }
+    { // v1197 DIAGNOSTIC (bugfix-stability, H-T refined; LOG ONLY). v1195 showed dev+11152 (D3D's deferred-submission counter: while
+      // non-zero, sub_8232E278 chains IBs instead of writing the ring) going 0->1 / 1->0 ~1000 times in a passing run, skipped tails
+      // included, and its 4000-line cap filled before the intro. Now only a counter that STAYS non-zero is logged: a ring of the last
+      // 16 retired submissions (tail decisions + counters) is dumped when 11152 has been non-zero for 64 consecutive retired
+      // submissions, a line at 256 / 1024 / 4096, and the 1->0 that ends such a run (how it ended). Device 0x1004cd00.
+        const auto rd=[&](std::uint32_t off)->std::uint32_t{const auto* p=space.translate(0x1004cd00u+off);
+            return p?(std::uint32_t{p[0]}<<24|std::uint32_t{p[1]}<<16|std::uint32_t{p[2]}<<8|p[3]):0xFFFFFFFFu;};
+        using Rec=TailRec;auto& ring=tailRing;auto& ringAt=tailRingAt;static std::uint64_t run=0;static unsigned stuckReports=0; // (v1198: namespace scope)
+        const Rec r{writeWord,previous,rd(11148),rd(11152),rd(11160),(unsigned short)irqs.size(),(unsigned short)irqRan,
+                    (unsigned short)irqSkipped,(unsigned short)irqFailed,irqsDeferred};
+        ring[ringAt++%16]=r;
+        if(r.c52 && r.c52!=0xFFFFFFFFu) {
+            ++run;
+            if((run==64 || run==256 || run==1024 || run==4096) && stuckReports<64) {
+                ++stuckReports;
+                __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_TAILSTUCK run=%llu c11148=%u c11152=%u c11160=%u write=%u",
+                    (unsigned long long)run,r.c48,r.c52,r.c60,r.write);
+                if(run==64)for(unsigned k=0;k<16;++k) {
+                    const Rec& q=ring[(ringAt+k)%16];
+                    __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_TAILSTUCK ring=%u write=%u prev=%u irqs=%u ran=%u skipped=%u failed=%u deferred=%u c11148=%u c11152=%u c11160=%u",
+                        k,q.write,q.prev,q.irqs,q.ran,q.skipped,q.failed,unsigned(q.deferred),q.c48,q.c52,q.c60);
+                }
+            }
+        } else {
+            if(run>=64 && stuckReports<64){++stuckReports;
+                __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_TAILSTUCK ended run=%llu write=%u irqs=%u ran=%u skipped=%u deferred=%u c11148=%u c11160=%u",
+                    (unsigned long long)run,r.write,unsigned(r.irqs),unsigned(r.ran),unsigned(r.skipped),unsigned(r.deferred),r.c48,r.c60);}
+            run=0;
+        }
     }
     const auto irqEnd=timing?Clock::now():Clock::time_point{};
     // v44 phase 3 (R): revalidate the snapshot the walk used, then publish. v36 checked readWord only

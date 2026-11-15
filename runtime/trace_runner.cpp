@@ -17,6 +17,7 @@
 #include "ppc_context.h"
 #include "ppc_recomp_shared.h"
 #include "recomp_app_dir.h" // data-paths: the app's files directory.
+#include "game_language.h" // v1511
 #include "generated_guest_import_bridge.h"
 #include "guest_address_space.h"
 #include "guest_clock.h"
@@ -101,6 +102,11 @@ thread_local bool completionSectionOpen=false; // v210: from the submission's dr
 // v211: the deferred scene interrupt's deliverer (set in runTraceMain) and the import-entry hook that calls it.
 std::function<bool(int)> deferredIrqDeliver;
 void deferredIrqImportHook(){if(deferredIrqDeliver)(void)deferredIrqDeliver(0);}
+// v1198 (bugfix-stability, the GPU-wait freeze, H-D): the deferred interrupt's state for the freeze report, and the GPU-wait poll as a
+// delivery point (recomp_v1198_poll_deliver, below). Set in runTraceMain next to the v211 statics.
+std::atomic<bool>* v1198PendingFlag=nullptr;
+std::atomic<unsigned long long>* v1198Deferred=nullptr,*v1198Delivered=nullptr,*v1198NotOpen=nullptr,*v1198Skipped=nullptr,*v1198Refused=nullptr;
+std::atomic<unsigned long long> v1198PollDelivered{0},v1198PollRefused{0};
 }
 extern "C" void recomp_autopilot_note_human() noexcept; // v842 (trainer_glue.inc)
 extern "C" __attribute__((weak)) std::atomic<bool> recomp_v233_baseline; // v233 (generic_renderer.cpp)
@@ -108,6 +114,10 @@ extern "C" std::atomic<unsigned> recomp_v338_presents,recomp_v338_spin_main_us; 
 namespace {
 std::atomic<bool> tileRecordingSeen{false};
 std::atomic<unsigned long long> submissionBarriers{0},deferredStoreFailures{0};
+// v1033 DIAGNOSTIC (bugfix-stability, C2): the v183 deferred completion-store jobs queued vs run, their stores, the v211 interrupt
+// path's applied stores, and the last kicked ring write word. Read only by the freeze snapshot (RENDER_DIAG_FREEZE_CP).
+std::atomic<unsigned long long> v1033JobsQueued{0},v1033StoresQueued{0},v1033JobsRun{0},v1033StoresApplied{0},v1033IrqStoresApplied{0};
+std::atomic<std::uint32_t> v1033LastKickWord{0},v1033LastKickAccepted{1};
 void submissionBarrier() {
     if(submissionBarrierDone)return;
     submissionBarrierDone=true;submissionBarriers.fetch_add(1,std::memory_order_relaxed);
@@ -128,6 +138,9 @@ namespace recomp::gpu {std::uint64_t nativeQueueFenceCount() noexcept;}
 #include "guest_data_variable_binding.h"
 #include "guest_kernel_version.h"
 #include "guest_native_read_only_directory.h"
+#include "stfs_content_device.h" // v1506: lazy read-only STFS content device (DLC packages, no extraction)
+#include "stfs_content_registry.h" // v1506: installed-content rows beyond the catalog file
+#include "dlc_admission.h" // v1524-admission 0: refuse at admission a pack that needs a title-update-only CRC device
 #include "guest_video_device_globals.h"
 #include "native_scaler_timing.h"
 #include "guest_stopped_gpu_submission.h"
@@ -158,6 +171,10 @@ namespace recomp::gpu {std::uint64_t nativeQueueFenceCount() noexcept;}
 #include "map_tap.h" // thor-maptap (v658): the app's map-tap request -> the pause map, pressed by the library
 #endif /* RECOMP_THOR_EDITION */
 #include "aaudio_output_stream.h"
+#include "audio_route.h" // v1710: the AAudio stream behind a router: a route change (headphones) reopens it instead of stopping the run
+#include "prewarm_quiesce.h" // v1711: the warm-up thread quiesced at the run's teardown
+#include "diag_guest_stop.h" // v1710: diag-guest-stop-sim (TEST ONLY, default off): one guest stop on purpose (teardown tests)
+#include "app_away.h" // app-away (BUG 02 step 2): no audio callbacks while the app's window is gone
 #include "audio_ahead.h" // audio-ahead: diag-au-ahead (the callback worker's bounded lead while main waits on the engine)
 #include "native_color_program_input.h"
 #include "native_color_batch_capture.h"
@@ -208,6 +225,13 @@ namespace recomp::gpu {std::uint64_t nativeQueueFenceCount() noexcept;}
 // Attempt v44: the retirement walk, its namespace-scope state and the runtime-maintenance precheck
 // live in diagnostic_retire.h (host-testable; R held only for the ring snapshot and the publication).
 #include "diagnostic_retire.h"
+#include "hud_game_state.h" // v1041: guestBase() in every edition
+#include "finish_trap_diag.h" // v1620: the touch-context lease (no read after the address space is released) [v1670: the lease only; the trap logger stays out]
+#include "my_music.h" // v1670: retireBase() when the guest memory is released (no export here: RECOMP_MY_MUSIC_EXPORT is guest_import_registry.cpp's)
+#include "freezewatch.h" // v1033: the freeze snapshot hook
+#include "audio_domain.h" // v1308: the audio threads' permit domain (D4)
+#include "c2_region.h" // v1051: the C2 dump window
+#include "poll_stack.h" // v1193: the GPU-wait poll stack at a freeze
 
 namespace recomp::bootstrap { void diagnosticDumpImports(); }
 namespace recomp::audio { void diagnosticDumpXma(); }
@@ -280,6 +304,111 @@ void logScratch(Registry& registry,recomp::bootstrap::GuestAddressSpace& space) 
             n+=std::snprintf(d+n,sizeof d-n," [%u m4=%08llx m0=%08llx p=%08llx *p=%08llx]",k,(unsigned long long)be(s+4),(unsigned long long)be(s),(unsigned long long)ptr,
                 (unsigned long long)(ptr>0?be(std::uint32_t(ptr)):-1LL));}
         __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_DIAG_DEVICE %s",d);
+    }
+}
+// v1033 DIAGNOSTIC (bugfix-stability, C2): the freeze snapshot, called by freezewatch's watchdog on reports 1 and 3 of a render stall.
+// H5: the render thread waits in sub_82220140 for a CP-block value the native side never publishes. One line separates the cases:
+//   kick=<last kicked ring write word> read=<published read word> rptr=<the write-back RPTR in guest memory> -> a kick not consumed (H4a)
+//   fence=<D3D fence = *(dev+11024)> issued=<dev+11036> jobs=<queued>/<run> stores=<queued>/<applied> irq_stores=<applied>
+//     -> deferred completion stores still pending (H4b: queued > run), or every store applied with fence < issued (H4c: the value the
+//        guest waits for was never in any submission), plus SCRATCH0-7 in the write-back block and the SCRATCH_ADDR block.
+inline Registry* v1033Registry=nullptr;inline recomp::bootstrap::GuestAddressSpace* v1033Space=nullptr;
+void v1033FreezeDump(unsigned report) {
+    auto* registry=v1033Registry;auto* space=v1033Space;if(!registry || !space)return;
+    const auto be=[&](std::uint32_t a)->long long{const auto* p=space->translate(a);
+        return p?(long long)((std::uint32_t{p[0]}<<24)|(std::uint32_t{p[1]}<<16)|(std::uint32_t{p[2]}<<8)|p[3]):-1LL;};
+    constexpr std::uint32_t Device=0x1004cd00;
+    const long long block=be(Device+11024);
+    long long readWord=-1,rptr=-1;bool locked=false;std::uint32_t ringVirtual=0,ringBytes=0; // (v1045: the ring's place for the dump)
+    { auto& mutex=registry->*get(MutexTag{});
+      if(mutex.try_lock()){locked=true;std::lock_guard lock(mutex,std::adopt_lock);
+          const auto& config=registry->*get(RingTag{});
+          if(config){readWord=config->readWord;ringVirtual=config->virtualAddress;ringBytes=config->bytes;
+                     if(config->writeBack)rptr=be(config->writeBack->virtualAddress);}} }
+    __android_log_print(ANDROID_LOG_WARN,"RecompRenderer",
+        "RENDER_DIAG_FREEZE_CP report=%u kick=%u kick_accepted=%u read=%lld rptr=%lld registry_lock=%s fence=%08llx issued=%08llx "
+        "jobs=%llu/%llu stores=%llu/%llu irq_stores=%llu store_failures=%llu",
+        report,v1033LastKickWord.load(),v1033LastKickAccepted.load(),readWord,rptr,locked?"free":"held",
+        (unsigned long long)(block>0?be(std::uint32_t(block)):-1LL),(unsigned long long)be(Device+11036),
+        v1033JobsQueued.load(std::memory_order_acquire),v1033JobsRun.load(std::memory_order_acquire),
+        v1033StoresQueued.load(),v1033StoresApplied.load(),v1033IrqStoresApplied.load(),deferredStoreFailures.load());
+    char d[420];int n=std::snprintf(d,sizeof d,"report=%u dev",report);   // D3D's words around the fence block (logScratch's v699 set)
+    for(std::uint32_t o=11008;o<=11056 && n>0 && n<(int)sizeof d-24;o+=4)n+=std::snprintf(d+n,sizeof d-n," +%u=%08llx",o,(unsigned long long)be(Device+o));
+    __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_FREEZE_CP %s",d);
+    if(locked)logScratch(*registry,*space);   // RENDER_DIAG_SCRATCH (write-back block s0-s7, rptr) and RENDER_DIAG_SCRATCH_BLOCK
+    // v1045 (C2 after the v1033 capture: ring empty, every completion published, fence 4 behind issued = H4c). The commands the guest
+    // wrote after its last kick: from the end of the last INDIRECT_BUFFER the ring holds (the newest one before readWord) up to D3D's
+    // command write pointer (dev+48). Written once per snapshot to files/private-trace/diag-c2-cmdbuf-<report>.bin, big-endian words
+    // as the guest wrote them, after a 64-byte header (magic, report, ring read word, ib address/size, region start/end, bytes) and the
+    // last 64 ring words. Read only; at most 256 KiB of region. Decoded on the host (local-analysis/bugfix/c2/pm4_decode.py).
+    if(ringVirtual && ringBytes>=64 && readWord>=0) {
+        const std::uint32_t words=ringBytes/4,rw=std::uint32_t(readWord)%words;
+        const auto ringWord=[&](std::uint32_t i)->std::uint32_t{const long long v=be(ringVirtual+(i%words)*4);return v<0?0u:std::uint32_t(v);};
+        std::uint32_t ibAddr=0,ibSize=0;
+        for(std::uint32_t back=1;back<=512 && back<words;++back) {       // the newest IB header before the read word (reported)
+            const std::uint32_t i=(rw+words-back)%words,h=ringWord(i);
+            if((h>>30)==3u && ((h>>8)&0x7Fu)==0x3Fu && ((h>>16)&0x3FFFu)>=1u){ibAddr=ringWord(i+1);ibSize=ringWord(i+2)&0xFFFFFu;break;}
+        }
+        // v1051: v1045 started the region at that newest IB's end. At the freeze (t-creatorgo-20261107-2005) that IB was a small
+        // buffer ABOVE the write pointer, so nothing was dumped. Now a fixed 256 KiB window ending at the write pointer (c2_region.h;
+        // it covers the main buffer's last kicked end and the small buffers inside that range), plus the highest IB end at or below
+        // the write pointer (header word 8) for the host decoder.
+        const long long writePtr=be(Device+48);
+        const auto window=recomp::c2region::unkicked(ringWord,rw,words,writePtr>0?std::uint32_t(writePtr)&0x1FFFFFFFu:0u,256u*1024u);
+        const std::uint32_t regionStart=window.start,regionEnd=window.end,regionBytes=window.bytes;
+        char path[160];std::snprintf(path,sizeof path,"%s%u.bin",RECOMP_APP_PATH("/private-trace/diag-c2-cmdbuf-"),report);
+        // v1305: only with files/private-trace/diag-freeze-dump present (public builds never write it; freezewatch.h openSnapshot)
+        FILE* f=recomp::freezewatch::openSnapshot(RECOMP_APP_PATH("/private-trace/diag-freeze-dump"),path);
+        const bool wrote=f!=nullptr;
+        if(f) {
+            std::uint32_t hdr[16]{};
+            const std::uint32_t vals[9]{0x43324342u /*C2CB*/,report,rw,ibAddr,ibSize,regionStart,regionEnd,regionBytes,window.ibEndBelow};
+            for(int k=0;k<9;++k)hdr[k]=__builtin_bswap32(vals[k]);
+            std::fwrite(hdr,4,16,f);
+            for(std::uint32_t k=0;k<64;++k){const std::uint32_t w=__builtin_bswap32(ringWord(rw+words-64+k));std::fwrite(&w,4,1,f);}
+            if(regionBytes)if(const auto* p=space->translate(0xA0000000u+regionStart))std::fwrite(p,1,regionBytes,f);
+            std::fclose(f);
+        }
+        __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_FREEZE_CMDBUF report=%u ring_read=%u ib=%08x+%u region=%08x..%08x bytes=%u ib_end_below=%08x file=%s",
+            report,rw,ibAddr,ibSize*4u,regionStart,regionEnd,regionBytes,window.ibEndBelow,wrote?path:"off");
+    }
+    { // v1198: the deferred tile interrupt (v211) at the freeze, and the last 16 retired submissions (diagnostic_retire.h tailRing)
+        const auto v=[](std::atomic<unsigned long long>* a)->unsigned long long{return a?a->load(std::memory_order_relaxed):~0ull;};
+        __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_FREEZE_IRQ report=%u pending=%d deferred=%llu delivered=%llu not_open=%llu "
+            "skipped=%llu refused=%llu poll_delivered=%llu poll_refused=%llu",report,v1198PendingFlag?int(v1198PendingFlag->load(std::memory_order_acquire)):-1,
+            v(v1198Deferred),v(v1198Delivered),v(v1198NotOpen),v(v1198Skipped),v(v1198Refused),v1198PollDelivered.load(),v1198PollRefused.load());
+        for(unsigned k=0;k<16;++k){const auto& q=tailRing[(tailRingAt+k)%16];
+            __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_FREEZE_TAIL report=%u ring=%u write=%u prev=%u irqs=%u ran=%u skipped=%u failed=%u "
+                "deferred=%u c11148=%u c11152=%u c11160=%u",report,k,q.write,q.prev,unsigned(q.irqs),unsigned(q.ran),unsigned(q.skipped),unsigned(q.failed),
+                unsigned(q.deferred),q.c48,q.c52,q.c60);}
+    }
+    // v1193 (bugfix-stability, GPU-wait freeze; poll_stack.h): which wait the spinning thread is in, its guest call stack and the words
+    // saved below each frame, the wait record, and D3D's kick / fence / tiling words. Read only.
+    {   namespace ps=recomp::pollstack;
+        char w[600];int k=std::snprintf(w,sizeof w,"report=%u",report);
+        for(std::uint32_t o:{48u,52u,56u,11016u,11036u,11068u,11072u,11148u,11152u,13600u,13604u,13608u,13612u,13760u,13772u,13784u,15300u,15304u,
+                              15332u,21940u,23768u,24392u})
+            if(k>0 && k<(int)sizeof w-24)k+=std::snprintf(w+k,sizeof w-k," +%u=%08llx",o,(unsigned long long)be(Device+o));
+        if(block>0)for(std::uint32_t o:{0u,4u,60u})if(k>0 && k<(int)sizeof w-24)k+=std::snprintf(w+k,sizeof w-k," blk+%u=%08llx",o,(unsigned long long)be(std::uint32_t(block)+o));
+        __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_FREEZE_D3D %s",w);
+        for(unsigned i=0;i<ps::Slots;++i) {
+            auto& sl=ps::slots[i];const auto owner=sl.owner.load(std::memory_order_relaxed);if(!owner)continue;
+            const auto polls=sl.polls.load(std::memory_order_acquire);const std::uint32_t sp=sl.sp.load(std::memory_order_relaxed),rec=sl.record.load(std::memory_order_relaxed);
+            const auto prev=sl.lastReported;sl.lastReported=polls;
+            __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_FREEZE_POLL report=%u slot=%u polls=%llu since_last=%llu sp=%08x record=%08x "
+                "rec=%08llx,%08llx,%08llx,%08llx,%08llx,%08llx",report,i,(unsigned long long)polls,(unsigned long long)(polls-prev),sp,rec,
+                (unsigned long long)be(rec),(unsigned long long)be(rec+4),(unsigned long long)be(rec+8),(unsigned long long)be(rec+12),
+                (unsigned long long)be(rec+16),(unsigned long long)be(rec+20));
+            ps::Frame fr[ps::MaxFrames];const unsigned n=ps::walk(sp,[&](std::uint32_t a){return be(a);},fr,ps::MaxFrames);
+            char c[400];int m=std::snprintf(c,sizeof c,"report=%u slot=%u frames=%u",report,i,n);
+            for(unsigned f=0;f<n && m>0 && m<(int)sizeof c-24;++f)m+=std::snprintf(c+m,sizeof c-m," %08x@%08x",fr[f].ret,fr[f].next);
+            __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_FREEZE_STACK %s",c);
+            for(unsigned f=0;f<n && f<6;++f) {   // the 16 words below each frame's sp (the callee's saved registers and LR)
+                char v[260];int q=std::snprintf(v,sizeof v,"report=%u slot=%u frame=%u next=%08x below=",report,i,f,fr[f].next);
+                for(std::uint32_t o=64;o>=4 && q>0 && q<(int)sizeof v-12;o-=4)q+=std::snprintf(v+q,sizeof v-q,"%08llx,",(unsigned long long)be(fr[f].next-o));
+                __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_FREEZE_SAVED %s",v);
+            }
+        }
     }
 }
 }
@@ -615,6 +744,9 @@ void addSaturating(std::uint64_t& target, std::size_t value) {
 } // namespace
 // script-mods (2026-10-25, local-analysis/trainer-mods): files/mods/ overrides of archive entries (settings/mods.txt scripts=on).
 #include "mods_glue.inc"
+#include "touch_context.h" // qol-touch (v702): the control context export   // v1090: ported from v966 (recomp_touch_context_v1)
+#include "play_mode.h" // Update 1: the E3 developer switch below
+#include "sandbox_pad.h" // Update 1 v955: the character-wheel block (the gamepad reader, user 0)
 
 // Attempt v21: core placement on the Thor (Snapdragon 8 Gen 2: cpu0-2 A510, cpu3-4 A715, cpu5-6
 // A710, cpu7 X3). Android's scheduler kept the two busiest threads together on cpu7 (v12 sample:
@@ -644,6 +776,39 @@ static std::atomic<unsigned long long> v284Concurrent{0},v284Declined{0},v284Gat
 // A/B window calls this with on = true (limit 1), else false (limit 2). Only a word holding 1 or 2 is changed (anything
 // else is left and reported), so a value the game itself set elsewhere is never overwritten.
 static std::uint8_t* v280GuestBase=nullptr;static std::atomic<unsigned> v280Last{0},v280Applied{0},v280Foreign{0};
+// v1090 (trainer-mods, lead 2026-11-08: one library for the Thor and the Fold): the block below is v966's, byte for byte.
+#if defined(RECOMP_TOUCH_CONTEXT)
+// qol-touch (v702, touch-controls-spec SPEC.md 1.3): the player's control context for the app's context touch controls (touch_context.h),
+// polled by the app every 100 ms through dlsym on this library; its presence is the API's version marker. Read-only guest loads.
+// Bit 15: the pause full map is on screen (map_tap.h mapShown, RECOMP_TOUCH_MAPTAP).
+extern "C" __attribute__((visibility("default"))) int recomp_touch_context_v1(void) {
+    const ::recomp::fintrap::LeaseRead v1620Lease(::recomp::fintrap::touchLease()); // v1620: held for the whole read; revoked before munmap
+    std::uint8_t* const v280GuestBase=const_cast<std::uint8_t*>(v1620Lease.base); // (shadows the file static: this function reads only the lease)
+    if(!v280GuestBase)return -1;
+    int w=recomp::touchctx::word(recomp::touchctx::GuestMemory{v280GuestBase});
+    { // v709 (diagnostic: the Fold read weapon nibble 13 = the infos table, 21:47): the raw values whenever the hash or the nibble changes
+        const recomp::touchctx::GuestMemory m{v280GuestBase};
+        static std::uint32_t lastHash=1;static int lastNibble=-1;
+        const std::uint32_t hash=recomp::touchctx::selectedWeapon(m);const int nib=(w>>26)&0xF;
+        if(hash!=lastHash || nib!=lastNibble) {
+            lastHash=hash;lastNibble=nib;
+            const std::uint32_t base=recomp::touchctx::WeaponInfos,arr=m.u32(base+32);
+            std::uint32_t hd[12];for(int i=0;i<12;++i)hd[i]=m.u32(base+4u*unsigned(i));
+            std::uint32_t e[3]{},eh[3]{};
+            for(int i=0;i<3;++i){e[i]=m.u32(arr+4u*unsigned(i));eh[i]=m.u32(e[i]+8);}
+            __android_log_print(ANDROID_LOG_INFO,"RecompPrivateTrace","TOUCH_WEAPON_RAW hash=%08x nibble=%d head=%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                "arr=%08x e0=%08x/%08x e1=%08x/%08x e2=%08x/%08x",hash,nib,hd[0],hd[1],hd[2],hd[3],hd[4],hd[5],hd[6],hd[7],hd[8],hd[9],hd[10],hd[11],
+                arr,e[0],eh[0],e[1],eh[1],e[2],eh[2]);
+        }
+    }
+#if defined(RECOMP_TOUCH_MAPTAP)
+    if(recomp::gpu::maptap::machine().mapShown())w|=0x8000; // (SPEC 5: the pause full map is on screen - the app gives the map its touches)
+    if(recomp::gpu::maptap::machine().watching())w|=1<<30; // (v711, SPEC 3.10: a map-tap episode runs - opening or closing goes through the
+                                                            //  pause menu for ~0.8 s; the owner saw the menu set flash: the app keeps MAP)
+#endif
+    return w;
+}
+#endif /* RECOMP_TOUCH_CONTEXT */
 extern "C" void recomp_v280_apply_limiter(bool on) {
     if(!v280GuestBase)return;
     auto* p=v280GuestBase+0x837CA13Cu;
@@ -1563,6 +1728,57 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
         if (!installedContent.load(bytes)) { std::cerr << "trace setup failed: invalid content catalog\n"; return 2; }
         argc -= 2;
     }
+    // v1506: --stfs-content-directory DIR (in argv just before --installed-content-catalog). Each regular file in DIR
+    // named [A-Za-z0-9]{1,42} (an Xbox content package file name) is opened read-only as an STFS package
+    // (stfs_content_device.h: header, hash tree and directory checked now; chains and data hashes on first read), in
+    // case-insensitive name order, which is the order the game enumerates them after the catalog's own rows. A package
+    // that fails validation is skipped with a RENDER_STFS line (a player's folder may hold other files); nothing is
+    // extracted, copied or written.
+    struct StfsCandidate { std::string name; std::shared_ptr<recomp::stfs::Package> package; };
+    std::vector<StfsCandidate> stfsPackages;
+    if (argc >= 3 && std::string_view(argv[argc - 2]) == "--stfs-content-directory") {
+        const std::filesystem::path directory(argv[argc - 1]);
+        if (!directory.is_absolute() || !hasInstalledContent) {
+            std::cerr << "trace setup failed: STFS content needs an absolute directory and the installed-content catalog\n"; return 2;
+        }
+        const int descriptor = open(directory.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY);
+        DIR* listing = descriptor < 0 ? nullptr : fdopendir(descriptor);
+        if (listing == nullptr) {
+            if (descriptor >= 0) { close(descriptor); }
+            std::cerr << "trace setup failed: STFS content directory is unavailable\n"; return 2;
+        }
+        const auto lower = [](std::string text) { for (auto& c : text) { if (c >= 'A' && c <= 'Z') { c = static_cast<char>(c + 32); } } return text; };
+        std::vector<std::string> names;
+        while (const dirent* item = readdir(listing)) {
+            const std::string name(item->d_name);
+            if (name.empty() || name.size() > 42 || !std::all_of(name.begin(), name.end(), [](char c) {
+                    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); })) { continue; }
+            names.push_back(name);
+        }
+        std::sort(names.begin(), names.end(), [&](const std::string& a, const std::string& b) {
+            const auto la = lower(a), lb = lower(b); return la != lb ? la < lb : a < b; });
+        std::set<std::string> rowNames;
+        for (const auto& name : names) {
+            std::string error;
+            if (!rowNames.insert(lower(name.substr(0, 40))).second) { error = "row name (first 40 characters) repeats"; }
+            else if (installedContent.records().size() + stfsPackages.size() >= recomp::bootstrap::MaximumCombinedContentRows) { error = "64 content rows already"; }
+            std::shared_ptr<recomp::stfs::Package> package;
+            if (error.empty()) {
+                auto source = recomp::stfs::FdByteSource::adopt(openat(dirfd(listing), name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW), error);
+                if (source) { package = recomp::stfs::Package::open(std::move(source), recomp::stfs::Options{}, error); }
+            }
+            if (!package) {
+                __android_log_print(ANDROID_LOG_WARN, "RecompRenderer", "RENDER_STFS skip name=%.8s reason=%s", name.c_str(), error.c_str());
+                continue;
+            }
+            if (const auto verdict = recomp::stfs::admission::judgePackage(*package); !verdict.admit) { __android_log_print(ANDROID_LOG_WARN, "RecompRenderer", "RENDER_STFS skip name=%.8s reason=%s", name.c_str(), verdict.reason.c_str()); continue; } // v1524-admission 1: the loader's policy (dlc_admission.h), logged
+            stfsPackages.push_back({name, std::move(package)});
+        }
+        closedir(listing);
+        __android_log_print(ANDROID_LOG_INFO, "RecompRenderer", "RENDER_STFS directory candidates=%zu opened=%zu",
+                names.size(), stfsPackages.size());
+        argc -= 2;
+    }
     std::map<std::string, std::shared_ptr<const NativeReadOnlyFile>> fileSources;
     for (const auto& request : fileRequests) {
         const auto guestPath = fileMetadata.pathAt(request.first);
@@ -2068,6 +2284,60 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
                 std::cerr << "trace setup failed: package requires complete matching preopened sources\n"; return 2;
             }
         }
+        // v1506: the STFS packages become rows after the catalog's (stfs_content_registry.h), each a content:
+        // namespace whose files are lazy views of the open package.
+        if (!stfsPackages.empty()) {
+            std::set<std::string> catalogNames;
+            for (const auto& record : installedContent.records()) {
+                std::string name;
+                for (std::size_t at = 264; at < record.size() && record[at]; ++at) { name.push_back(static_cast<char>(std::tolower(record[at]))); }
+                catalogNames.insert(name);
+            }
+            struct Backend { std::string name; std::shared_ptr<recomp::stfs::Package> package; recomp::bootstrap::GuestFileMetadataCatalog metadata;
+                             recomp::bootstrap::GuestImportRegistry::ContentFiles files; std::size_t directories{0}; };
+            std::vector<recomp::bootstrap::GuestContentCatalog::Record> rows;
+            std::vector<Backend> backends;
+            for (auto& candidate : stfsPackages) {
+                std::string rowName = candidate.name.substr(0, 40), lowered;
+                for (const char c : rowName) { lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c)))); }
+                const char* skip = candidate.package->titleId() != titleId ? "another title"
+                        : catalogNames.count(lowered) ? "already a catalog row" : nullptr;
+                Backend backend{candidate.name, candidate.package, {}, {}, 0};
+                if (!skip && !backend.metadata.load(candidate.package->metadataCatalog())) { skip = "metadata rejected"; }
+                if (!skip) {
+                    const auto& entries = candidate.package->entries();
+                    for (std::size_t i = 0; i < entries.size(); ++i) {
+                        if (entries[i].directory) { ++backend.directories; continue; }
+                        backend.files.emplace(recomp::stfs::Package::guestPath(entries[i]),
+                                              std::make_shared<const recomp::stfs::File>(candidate.package, i));
+                    }
+                    if (backend.files.empty()) { skip = "no files"; }
+                }
+                if (skip) {
+                    __android_log_print(ANDROID_LOG_WARN, "RecompRenderer", "RENDER_STFS skip name=%.8s reason=%s", candidate.name.c_str(), skip);
+                    continue;
+                }
+                rows.push_back(recomp::stfs::catalogRecord(*candidate.package, rowName));
+                backends.push_back(std::move(backend));
+            }
+            std::string why;
+            if (!rows.empty() && !recomp::bootstrap::bindExtraContentRows(&registry, installedContent, rows, why)) {
+                std::cerr << "trace setup failed: STFS content rows rejected: " << why << "\n"; return 2;
+            }
+            const auto first = static_cast<std::uint32_t>(installedContent.records().size() + 1);
+            for (std::size_t i = 0; i < backends.size(); ++i) {
+                const auto& backend = backends[i];
+                if (!registry.bindContentPackage(first + static_cast<std::uint32_t>(i), backend.metadata, backend.files)) {
+                    std::cerr << "trace setup failed: STFS package binding rejected\n"; return 2;
+                }
+                __android_log_print(ANDROID_LOG_INFO, "RecompRenderer",
+                        "RENDER_STFS package=%u name=%.8s files=%zu directories=%zu blocks=%u bytes=%llu",
+                        first + static_cast<std::uint32_t>(i), backend.name.c_str(), backend.files.size(), backend.directories,
+                        backend.package->totalBlocks(), static_cast<unsigned long long>(backend.package->packageBytes()));
+            }
+            __android_log_print(ANDROID_LOG_INFO, "RecompRenderer", "RENDER_STFS rows catalog=%zu stfs=%zu total=%zu",
+                    installedContent.records().size(), backends.size(), installedContent.records().size() + backends.size());
+        }
     }
     PPCContext context{};
     recomp::bootstrap::GuestDataVariableBinding hardwareInfo;
@@ -2184,7 +2454,12 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
         std::cerr << "trace setup failed: title termination metadata binding rejected\n"; return 2;
     }
 #if defined(__ANDROID__)
-    auto nativeAudio = experimentalNativeAudio ? std::make_shared<recomp::audio::AAudioOutputStream>() : nullptr;
+    // v1710 (audio_route.h): the AAudio stream behind a router. v1670's AAudioOutputStream let an AAudio disconnect (Bluetooth
+    // headphones connected / disconnected) fail the render client -> "Native audio demand/counter/backend failure" -> guest stop; the
+    // router reopens the stream on the new default route (a helper thread), keeps the client's configuration and counters, and still
+    // fails on a real backend failure. diag-audio-route-sim (TEST ONLY, default off) takes the disconnect path at set times.
+    auto nativeAudio = experimentalNativeAudio
+        ? recomp_audio_route::makeAAudioRouter(RECOMP_APP_PATH("/private-trace/diag-audio-route-sim")) : nullptr;
     // audio-ahead: the render client and the registry see the stream through AheadBackend (pass-through; capacity reported
     // + 4 packets, so diag-au-ahead can toggle in-run); the worker's gate keeps v431's demand rule unless the switch is on.
     const auto auAheadBackend = experimentalNativeAudio && experimentalNativeAudioRenderer
@@ -2238,6 +2513,16 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
         return found == fileSources.end() ? nullptr : found->second;
     };
     recomp_mods::setup();
+    // Update 1 E3 (DEVELOPER switch, never written by the public app; ALLOCATION.md §4): files/private-trace/diag-play-mode-sandbox
+    // latches Sandbox before anything can make the saves state (filesRootFor settles the mode at the first saves state, later).
+    // v955: the file may hold the export's value (mode | sandbox_flags << 8, e.g. "257" = Sandbox + online world); empty = 1.
+    if (FILE* devMode = std::fopen(RECOMP_APP_PATH("/private-trace/diag-play-mode-sandbox"), "r")) {
+        int value = 1;
+        if (std::fscanf(devMode, "%d", &value) != 1) { value = 1; }
+        std::fclose(devMode);
+        const int latched = ::recomp::bootstrap::play_mode::requestValue(value);
+        __android_log_print(ANDROID_LOG_INFO, "RecompSaves", "SAVES_SANDBOX_MODE dev-switch diag-play-mode-sandbox request=%d result=%d", value, latched);
+    }
     if ((hasFileMetadata || nativeCache || nativeUpdate || nativeGameCache) && !registry.bindFileMetadataQuery([&](auto path) {
         auto result = [&] {
         if (nativeGameCache && nativeGameCache->owns(path)) {
@@ -2377,6 +2662,8 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
     struct DeferredIrqStats {std::atomic<unsigned long long> deferred{0},delivered{0},atImport{0},atMust{0},drained{0},drainNs{0},
         notOpen{0},waitedOpen{0},refused{0},failed{0},latencyNs{0},latencyMaxNs{0},skipped{0};};
     static DeferredIrqStats deferredIrqStats;
+    v1198PendingFlag=&deferredIrqPending;v1198Deferred=&deferredIrqStats.deferred;v1198Delivered=&deferredIrqStats.delivered; // v1198
+    v1198NotOpen=&deferredIrqStats.notOpen;v1198Skipped=&deferredIrqStats.skipped;v1198Refused=&deferredIrqStats.refused;
     const auto irqDeferredOn=[]{
         static std::atomic<long long> checkedAt{0};static std::atomic<bool> on{false};
         const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(SubmitClock::now().time_since_epoch()).count();
@@ -2499,6 +2786,7 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
             diagnostic_skip::ocqAfter(st);
         }
         if(failed)deferredStoreFailures.fetch_add(failed,std::memory_order_relaxed);
+        v1033IrqStoresApplied.fetch_add((to>from?to-from:0)-failed,std::memory_order_relaxed); // v1033
     };
     // The same handoff the synchronous path runs for a tile-command interrupt (the retire interrupt callback below).
     const auto commandIrq=[&](std::uint32_t physical,const std::vector<std::uint8_t>& bytes)->std::optional<recomp::bootstrap::NativeTileSceneHandoffResult> {
@@ -2874,7 +3162,8 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
                             unsigned(result.admitted),unsigned(result.returned),result.worker,result.scratchWrites,result.scratchWaits,result.guestReturns);
                         return result.admitted && result.returned;
                     },&retireTiming,[&](std::vector<diagnostic_skip::detail::Store>&& stores)->bool { // v183
-                        return recomp::gpu::generic::queueGuestWork([space=&addressSpace,stores=std::move(stores)] {
+                        const auto queuedStores=stores.size(); // v1033
+                        const bool queued=recomp::gpu::generic::queueGuestWork([space=&addressSpace,stores=std::move(stores)] {
                             unsigned failed=0;
                             for(const auto& st:stores) { // the same stores diagnostic_skip::retire's apply() writes
                                 if(st.virt){auto* q=space->translate(st.address);if(!q){++failed;continue;}diagnostic_skip::put(q,st.value,2);continue;}
@@ -2886,7 +3175,10 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
                                 diagnostic_skip::ocqAfter(st);
                             }
                             if(failed)deferredStoreFailures.fetch_add(failed,std::memory_order_relaxed);
+                            v1033StoresApplied.fetch_add(stores.size()-failed,std::memory_order_relaxed);v1033JobsRun.fetch_add(1,std::memory_order_release); // v1033
                         });
+                        if(queued){v1033JobsQueued.fetch_add(1,std::memory_order_release);v1033StoresQueued.fetch_add(queuedStores,std::memory_order_relaxed);} // v1033
+                        return queued;
                     },deferIrqs);}) // DIAGNOSTIC LAST RESORT (v211: deferIrqs)
                 ;
 #undef TRACE_SUBMISSION
@@ -2895,6 +3187,7 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
                 const auto be=[&](std::uint32_t a)->std::uint32_t{const auto* p=addressSpace.translate(a);
                     return p?(std::uint32_t{p[0]}<<24)|(std::uint32_t{p[1]}<<16)|(std::uint32_t{p[2]}<<8)|p[3]:0xFFFFFFFFu;};
                 const auto block=be(0x1004cd00u+11024);
+                v1033LastKickWord.store(word,std::memory_order_relaxed);v1033LastKickAccepted.store(accepted?1u:0u,std::memory_order_relaxed); // v1033
                 if(!accepted || recomp::diag::sampled(submitLines))::recomp::diag::quietLogSampled(!accepted,ANDROID_LOG_INFO,"RecompRenderer","RENDER_DIAG_SUBMIT write=%u accepted=%u handler=%s fence=%08x issued=%08x",
                     word,unsigned(accepted),acceptedBy,block!=0xFFFFFFFFu?be(block):0xFFFFFFFFu,be(0x1004cd00u+11036));
             }
@@ -3050,6 +3343,7 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
 #ifdef RECOMP_THOR_EDITION
                 mapTapPad(state,nowMs); // thor-maptap (v658)
 #endif /* RECOMP_THOR_EDITION */
+                state.buttons=recomp::sandbox::pad::filter(state.buttons,nowMs); // v955: the wheel block (Sandbox, online character only)
                 probeInput(state);
 #ifdef RECOMP_THOR_EDITION
                 recomp::gpu::wheelrep::notePad(state.buttons,nowMs); // thor-radio (v651): the radio wheel's button (D-pad LEFT) for the renderer
@@ -3060,6 +3354,7 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
 #ifdef RECOMP_THOR_EDITION
         if(user==0)mapTapPad(state,nowMs); // thor-maptap (v658)
 #endif /* RECOMP_THOR_EDITION */
+        if(user==0)state.buttons=recomp::sandbox::pad::filter(state.buttons,nowMs); // v955: the wheel block (Sandbox, online character only)
         if(connected==1)probeInput(state);
 #ifdef RECOMP_THOR_EDITION
         if(user==0 && connected==1)recomp::gpu::wheelrep::notePad(state.buttons,nowMs); // thor-radio (v651): the radio wheel's button (D-pad LEFT)
@@ -3076,6 +3371,8 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
         return inputCallbacks->gamepadCapabilities(inputCallbacks->inputUser,user,&state);
     }))return 2;
     recomp_bind_generated_guest_import_registry(&registry, addressSpace.base());
+    diagnostic_skip::v1033Registry=&registry;diagnostic_skip::v1033Space=&addressSpace; // v1033: the freeze snapshot's inputs
+    recomp::freezewatch::state().dump.store(&diagnostic_skip::v1033FreezeDump,std::memory_order_release);
     recomp::bootstrap::GuestExecutionGuard guard;
     const auto traceSink = functionLabelLimit == 0
                     ? recomp::bootstrap::GuestExecutionGuard::FunctionTraceSink{}
@@ -3128,11 +3425,17 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
         static const bool splitRenderDomains=::access(RECOMP_APP_PATH("/private-trace/diag-domain-split-render"),F_OK)==0;
         __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_DIAG_DOMAIN_SPLIT enabled=%u tile_worker_domain=%u hook_domain=%u",
             unsigned(splitRenderDomains),splitRenderDomains?6u:2u,splitRenderDomains?7u:2u);
+        // v1308 (D4): the PCM callback worker in its own domain (audio_domain.h). v1311: ON by default (Fold A/B in two sessions: 169-176 ->
+        // 176-184 packets/s, frame time neutral); files/private-trace/diag-audio-callback-domain-off = v1175's shared domain 1.
+        static const bool audioCallbackOwn=::access(RECOMP_APP_PATH("/private-trace/diag-audio-callback-domain-off"),F_OK)!=0;
+        __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_DIAG_AUDIO_DOMAIN callback_own=%u callback_domain=%u engine_domain=%u each_end=%u",
+            unsigned(audioCallbackOwn),recomp_audio_domain::domainFor(recomp_audio_domain::CallbackToken,audioCallbackOwn),
+            recomp_audio_domain::domainFor(recomp_audio_domain::EngineToken,audioCallbackOwn),recomp_audio_domain::eachEnd(audioCallbackOwn));
         recomp::bootstrap::setGuestThreadDomainPolicy([](std::uint32_t token,std::uint32_t,std::uint32_t)->unsigned {
             for(unsigned i=0;i<ownDomainCount;++i)if(token==ownDomainTokens[i])return 4u+i; // v78 (listed tokens only)
             if(splitRenderDomains && token==0x640b1000u)return 6u; // v119
             if(splitRenderDomains && token==0x641c8000u)return 7u; // v119
-            if(token==0x64141000u || token==0x64184000u)return 1u;
+            if(const unsigned a=recomp_audio_domain::domainFor(token,audioCallbackOwn);a!=recomp_audio_domain::NotAudio)return a; // (v1308; was: both 1)
             // Attempt v30: every observed renderer/Vulkan caller in its own domain, so renderer state
             // stays single-permit (the lanes-audit S6 invariant, moved from domain 0 to domain 2)
             // while the main and other game threads run beside it: the D3D render thread 6408e000,
@@ -3154,14 +3457,30 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
                 static std::mutex assignedMutex;static std::map<std::uint32_t,unsigned> assigned;static unsigned nextDomain=8;
                 std::lock_guard guard(assignedMutex);
                 if(const auto found=assigned.find(token);found!=assigned.end())return found->second;
-                if(nextDomain<64u){assigned.emplace(token,nextDomain);return nextDomain++;}
+                if(nextDomain<recomp_audio_domain::eachEnd(audioCallbackOwn)){assigned.emplace(token,nextDomain);return nextDomain++;} // (v1308: 63 kept free when the callback owns it)
             }
             return 0u;
         });
         v280GuestBase=addressSpace.base(); // v280 (the frame-limiter word)
-#ifdef RECOMP_THOR_EDITION
-        recomp::gpu::hud::guestBase().store(addressSpace.base(),std::memory_order_release); // hud3 (v585): the second screen reads the player's state
-#endif /* RECOMP_THOR_EDITION */
+        // v1620 (fold-finish-trap): the app's touch poll reads through a lease, revoked (readers drained) when this scope ends, before
+        // ~GuestAddressSpace munmaps the space (run-v1575-11121954: the poll after the guest stop faulted at base + 0x8394B8B0).
+        // v1670: the same lease covers My Music's poll (my_music.h stateNow) and the HUD readers (hud_game_state.h GuestLease); the
+        // revoke also clears hud::guestBase() and My Music's published base (the next run publishes again).
+        ::recomp::fintrap::touchLease().publish(addressSpace.base());
+        struct V1620Revoke{~V1620Revoke(){
+            ::recomp::fintrap::touchLease().revoke();
+            // v1710: the freezewatch watchdog ticks under the same lease (drained above); no device / fence / snapshot input survives
+            // the run (run t-vmod-A-20261113-0107: its report after the stop called vkGetFenceStatus on the destroyed device).
+            recomp::freezewatch::retire();
+            recomp::gpu::prewarmq::quiesce(); // v1711: the generic renderer's warm-up thread stops (drained) before ~VulkanEngine (run t-gstop-20261113-0432)
+            diagnostic_skip::v1033Registry=nullptr;diagnostic_skip::v1033Space=nullptr;
+            recomp::gpu::hud::guestBase().store(nullptr,std::memory_order_release);
+            ::recomp::mymusic::retireBase();
+            v280GuestBase=nullptr;
+            __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_FINISH_TRAP_LEASE revoked (guest memory released next; touch reads now return -1)");
+        }} v1620Revoke;
+        // hud3 (v585): the second screen reads the player's state; v1041: every edition (frame generation's cutscene pause reads it)
+        recomp::gpu::hud::guestBase().store(addressSpace.base(),std::memory_order_release);
         recomp::bootstrap::GuestCooperativeExecutor executor;
         // v119: in split mode a busy submission handler parks the submitter (at most 5 s, then v118's rejection).
         if(splitRenderDomains)(void)recomp::bootstrap::bindGuestGraphicsSubmissionWaiter([&executor](const std::function<bool()>& ready){
@@ -3269,6 +3588,19 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
                 || !registry.bindMountedDisc(static_cast<std::uint32_t>(titleValues[2])))) {
             std::cerr << "trace setup failed: mounted executable disc identity rejected\n"; return 2;
         }
+        // v1511 (Discord F1): XCONFIG_USER_LANGUAGE / USER_COUNTRY from the app's Language row, read once before the title starts
+        // (game_language.h has the game's own mapping). The app folder is derived (setFromArgv0) before runTraceMain runs.
+        const recomp::game_language::Choice& gameLanguage = [] () -> const recomp::game_language::Choice& {
+            char text[64]{}; bool known = false; bool present = false;
+            if (FILE* f = std::fopen(RECOMP_APP_PATH("/settings/language.txt"), "rb")) {
+                present = true; const std::size_t n = std::fread(text, 1, sizeof text - 1, f); std::fclose(f); text[n] = 0;
+            }
+            const auto& c = recomp::game_language::parse(present ? text : nullptr, &known);
+            __android_log_print(ANDROID_LOG_INFO, "RecompRenderer", "RENDER_LANGUAGE word=%s xlanguage=%u country=%u game=%d (%s)",
+                                c.word, unsigned(c.xLanguage), unsigned(c.country), c.gameLanguage,
+                                !present ? "no language.txt: the default" : known ? "settings/language.txt" : "unknown word: the default");
+            return c;
+        }();
         if (!registry.bindThreadExitHandler([&](auto token,auto code) {
                 return executor.terminateCurrentThread(token,[&] {
                     if (!registry.markGuestThreadReturned(token,code)) return false;
@@ -3280,8 +3612,8 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
             }) || !registry.bindVirtualCpuAffinity() || !registry.bindThreadDebugNaming() || !registry.bindNotificationService() || !registry.bindSignedOutUsers()
                 || !registry.bindNoRawStorageDevices()
                 || !registry.bindNoLaunchData()
-                || !registry.bindUserLanguage(1) // Native test application's English preference.
-                || !registry.bindUserCountry(103) // Test locale US; not host/account geography.
+                // v1511: the player's language (settings/language.txt, one container word; none = american: English, country US as before)
+                || !registry.bindUserLanguage(gameLanguage.xLanguage) || !registry.bindUserCountry(gameLanguage.country)
                 || !registry.bindThreadPriorityHandler([&](auto token, auto priority) { return executor.setPriority(token, priority); })
                 || !registry.bindNetworkLifecycle()
                 // v211: a render thread with a deferred interrupt pending delivers it before it parks or sleeps (the tile
@@ -3320,14 +3652,18 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
                 // the client behind AheadBackend admits 4 packets more, which only the gate's Early decision (main parked on
                 // an engine-signalled handle, diag-au-ahead*) uses. The worker's token and v431's target, before it runs.
                 recomp_au_ahead::workerStart(token,auAheadBackend.get());
+                recomp_diag_stop::arm(RECOMP_APP_PATH("/private-trace/diag-guest-stop-sim")); // v1710: TEST ONLY; absent = off
                 return executor.enqueue(token,[&,cpu,initial=*initial,token] {
                     using Demand=recomp::audio::NativeAudioRenderClient::Demand;
                     for(;;) { // (audio-ahead: out-of-line calls only; this lambda's PGO record is lost all the same: low-CPU loop)
                         recomp::bootstrap::GuestExecutionGuard::checkpoint("native_audio_callback_demand");
-                        const auto demand=recomp_au_ahead::gateDemand(nativeAudioRenderer->poll(token),*nativeAudioRenderer);
+                        const auto demand=recomp_away::audioGate(recomp_au_ahead::gateDemand(nativeAudioRenderer->poll(token),*nativeAudioRenderer),
+                            Demand::Failed,Demand::Wait); // app-away: no callback while the app's window is gone (AAudio plays out, then silence)
                         if (demand==Demand::Failed) throw std::runtime_error("Native audio demand/counter/backend failure");
+                        if (recomp_diag_stop::due()) // v1710: diag-guest-stop-sim only (TEST ONLY, default off): the same throw site
+                            throw std::runtime_error("diag-guest-stop-sim: one injected guest stop (TEST ONLY, default off)");
                         if (demand==Demand::Wait) {
-                            const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(1);
+                            const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(recomp_away::audioWaitMs()); // (app-away: 20 ms while away)
                             // audio-ahead: v431's 1 ms backpressure wait, also ended by a new hint
                             if (!executor.waitUntil([deadline]{return recomp_au_ahead::holdOver(deadline);},deadline))
                                 throw std::runtime_error("Native audio backpressure wait rejected");
@@ -4984,6 +5320,7 @@ extern "C" int recomp_run_private_trace_v6(int argc,char** argv,const RecompPriv
     if(d.structureBytes!=sizeof(d) || d.version!=4 || d.reserved0 || d.reserved1 || !d.orderedRgba)return 2;
     try {
         recomp::gpu::direct::presenter().setWindow({owned.windowUser,owned.acquireWindow,owned.releaseWindow,owned.windowGeneration});
+        recomp_away::bind({owned.windowUser,owned.acquireWindow,owned.releaseWindow,owned.windowGeneration}); // app-away: the render thread's look for the window's return
         DirectDisplayBridge display(d);
         const RecompPrivateTraceCallbacksV3 bridge{sizeof(RecompPrivateTraceCallbacksV3),3,0,0,&display,
             [](void* user,const std::uint8_t* rgba,std::uint32_t bytes,std::uint32_t width,std::uint32_t height)noexcept{
@@ -4995,3 +5332,16 @@ extern "C" int recomp_run_private_trace_v6(int argc,char** argv,const RecompPriv
 #else
 int main(int argc,char** argv) {return runTraceMain(argc,argv);}
 #endif
+// v1198 (bugfix-stability, H-D): the GPU-wait poll as a must-deliver point for a pending deferred tile interrupt. v211 delivers it at the render
+// thread's imports, D3D hook entries, submission starts and before it parks or sleeps; a render thread spinning in D3D's poll (sub_82220140,
+// pure guest code) reaches none of them, while the fence it waits for sits in IBs D3D chains until that interrupt's ISR (sub_836BE058) brings
+// dev+11152 back to 0: a deadlock (v1193/v1197 freezes: BlockOnFence, 11152 = 1, ring empty). Called by poll_stack's hook after 2 ms of one
+// wait. Returns 1 delivered, -1 refused (it stays pending), 0 nothing pending / not the render thread / off (diag-irq-poll-deliver-off).
+extern "C" int recomp_v1198_poll_deliver() noexcept {
+    if(!v1198PendingFlag || !v1198PendingFlag->load(std::memory_order_acquire) || !deferredIrqDeliver)return 0;
+    if(recomp::bootstrap::currentGuestThreadToken()!=0x6408e000u)return 0;
+    if(::access(RECOMP_APP_PATH("/private-trace/diag-irq-poll-deliver-off"),F_OK)==0)return 0;
+    const bool ok=deferredIrqDeliver(1);
+    (ok?v1198PollDelivered:v1198PollRefused).fetch_add(1,std::memory_order_relaxed);
+    return ok?1:-1;
+}

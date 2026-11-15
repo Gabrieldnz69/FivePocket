@@ -17,6 +17,13 @@ give the pack module (the reglod table module) byte for byte; a co-issue transla
 control in another order; every new module must differ from the one it replaces and pass spirv-val. A key a table
 names that fails any check refuses the stage: nothing is left out silently.
 
+An optional fifth table, kind ocean (1.1.5, 2026-11-15; before, a pre-made copy was supplied with the runtime sources):
+  ocean           the plain-v41 translation of each listed pixel shader with a patched copy of the v41 shader_common.h (the
+                  header is the translator's third argument and is emitted into the HLSL; no translator change), one row
+                  set per variant in OCEAN_VARIANTS order: round (+1.5/1024 texel on the fetch offset, Xenia's rounding
+                  offset), bias-ulp and bias-step (diagnostics). Controls as above (v41 == pack module); each variant's HLSL
+                  differs from the control's only in the patched helper lines, and its module differs and validates.
+
 What steers it is a private parameter file (keys and the tables' first lines, which name the scripts the tables came
 from): --recipes FILE, {"schema": "shader-fixes/1", "tables": [{"name", "kind", "keys": [hex...], "head": [lines],
 "sha256"}]}. The keys are hashes; this tool holds no game data. Output, game-derived, stays under local-analysis/.
@@ -37,7 +44,34 @@ import time
 sys.dont_write_bytecode = True
 
 KINDS = ('ptx', 'cloth', 'coissue', 'coissue-reglod')
+OPTIONAL_KINDS = ('ocean',)
 NEW_LOCATIONS = (23, 24)
+OCEAN_ROUND = '(1.5 / 1024.0)'
+# (old, new) replacements inside the HLSL (#else) branch of the v41 header, per variant; each old text must occur once.
+OCEAN_VARIANTS = {
+    'round': [
+        ('texCoord + offset / getTexture2DDimensions(texture));',
+         f'texCoord + (offset + {OCEAN_ROUND}) / getTexture2DDimensions(texture)); // ocean-round: Xenia rounding_offset'),
+        ('float3(texCoord.xy + offset.xy / dimensions.xy, texCoord.z * dimensions.z));',
+         f'float3(texCoord.xy + (offset.xy + {OCEAN_ROUND}) / dimensions.xy, texCoord.z * dimensions.z)); // ocean-round'),
+        ('return select(isnan(texCoord), 0.0, frac(texCoord * getTexture2DDimensions(texture) + offset - 0.5));',
+         f'return select(isnan(texCoord), 0.0, frac(texCoord * getTexture2DDimensions(texture) + offset + {OCEAN_ROUND} - 0.5)); // ocean-round'),
+        ('return select(isnan(texCoord), 0.0, frac(texCoord * getTexture2DArrayDimensions(texture) + offset - 0.5));',
+         f'return select(isnan(texCoord), 0.0, frac(texCoord * getTexture2DArrayDimensions(texture) + offset + {OCEAN_ROUND} - 0.5)); // ocean-round'),
+    ],
+    'bias-ulp': [
+        ('return XENOS_SAMPLE(texture, g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));',
+         'float2 c = texCoord + offset / getTexture2DDimensions(texture); uint2 b = asuint(c); '
+         'c = select(c > 0.0, asfloat(b - 1u), select(c < 0.0, asfloat(b + 1u), -asfloat(uint2(1u, 1u)))); // ocean-bias-ulp\n'
+         '    return XENOS_SAMPLE(texture, g_SamplerDescriptorHeap[samplerDescriptorIndex], c);'),
+    ],
+    'bias-step': [
+        ('texCoord + offset / getTexture2DDimensions(texture));',
+         'texCoord + (offset - (1.0 / 256.0)) / getTexture2DDimensions(texture)); // ocean-bias-step'),
+    ],
+}
+OCEAN_NAMES = {'round': 'OceanRound', 'bias-ulp': 'OceanBiasUlp', 'bias-step': 'OceanBiasStep'}
+OCEAN_ULP_LINE = '+    return XENOS_SAMPLE(texture, g_SamplerDescriptorHeap[samplerDescriptorIndex], c);'
 SPIRV_MAGIC = b'\x03\x02\x23\x07'
 
 
@@ -173,6 +207,60 @@ def table_text(kind: str, head: list, rows: list) -> str:
     return '\n'.join(text) + '\n'
 
 
+def ocean_header(base: str, variant: str) -> str:
+    for old, new in OCEAN_VARIANTS[variant]:
+        if base.count(old) != 1:
+            raise ValueError(f'ocean {variant}: v41 header shape refused')
+        base = base.replace(old, new)
+    return base
+
+
+def ocean_table_text(head: list, made: dict) -> str:
+    """The ocean table in the layout the renderer includes: per variant, its modules then its DenormOverride rows."""
+    text = list(head)
+    for v in OCEAN_VARIANTS:
+        rows = made[v]
+        for i, (key, code) in enumerate(rows):
+            if len(code) % 4 or code[:4] != SPIRV_MAGIC:
+                raise ValueError('override module framing refused')
+            text.append(f'static const std::uint32_t {OCEAN_NAMES[v]}Module{i}[]={{' + ','.join(f'0x{x:08x}' for x in spirv_words(code)) + '};')
+        text.append(f'static const DenormOverride {OCEAN_NAMES[v]}Overrides[]={{')
+        for i, (key, code) in enumerate(rows):
+            text.append(f'    {{0x{key:016x}ull,{len(code) // 4}u,{OCEAN_NAMES[v]}Module{i}}},')
+        text.append('};')
+    return '\n'.join(text) + '\n'
+
+
+def make_ocean(key: int, rec: dict, pack: dict, tc, out: Path, headers: dict) -> dict:
+    """variant -> (key, module) for one pixel shader; the v41 control must give the pack module first."""
+    import difflib
+    stage_id, module, _elements, _dst = pack[key]
+    if stage_id == 0:
+        raise ValueError('ocean key is not a pixel shader')
+    folder = out / 'records' / 'ocean' / f'{key:016x}'
+    folder.mkdir(parents=True)
+    container = rec['folder'] / 'container.xenos'
+    control_hlsl = tc.translate('v41', container, folder, 'control')
+    if tc.compile('pixel', control_hlsl, folder, 'control') != module:
+        raise ValueError('v41 control does not reproduce the pack module')
+    h0 = control_hlsl.splitlines()
+    result = {}
+    for v, header in headers.items():
+        out_hlsl = folder / f'{v}.hlsl'
+        tc.run([tc.c['v41_translator'], container, out_hlsl, header], folder, f'{v}-translate')
+        h1 = out_hlsl.read_text(encoding='utf-8').splitlines()
+        diff = [l for l in difflib.unified_diff(h0, h1, lineterm='', n=0) if l[:1] in '+-' and l[:3] not in ('+++', '---')]
+        removed = [l for l in diff if l.startswith('-')]
+        if not diff or len(removed) != len(OCEAN_VARIANTS[v]) or \
+                not all('ocean-' in l or l.startswith('-') or l.strip() == OCEAN_ULP_LINE.strip() for l in diff):
+            raise ValueError(f'ocean {v}: HLSL differs from the control beyond the patched helper lines')
+        code = tc.compile('pixel', out_hlsl.read_text(encoding='utf-8'), folder, v)
+        if code == module:
+            raise ValueError(f'ocean {v}: override unchanged')
+        result[v] = (key, code)
+    return result
+
+
 class Toolchain:
     def __init__(self, config: dict, work: Path):
         import shader_toolchain
@@ -280,7 +368,9 @@ def run(args) -> int:
     started = time.monotonic()
     import shader_toolchain
     recipes = json.loads(args.recipes.read_text(encoding='utf-8'))
-    if recipes.get('schema') != 'shader-fixes/1' or [t['kind'] for t in recipes['tables']] != list(KINDS):
+    kinds = [t['kind'] for t in recipes.get('tables', [])]
+    if recipes.get('schema') != 'shader-fixes/1' or kinds[:len(KINDS)] != list(KINDS) or \
+            any(k not in OPTIONAL_KINDS for k in kinds[len(KINDS):]) or len(set(kinds)) != len(kinds):
         raise ValueError('shader-fix recipes refused')
     config = shader_toolchain.load(args.toolchain, args.host_tools, args.ndk, fixes=True)
     config = {k: str(Path(v).resolve(strict=True)) for k, v in config.items()}
@@ -308,6 +398,10 @@ def run(args) -> int:
     for key in plan[0][1] + plan[1][1]:
         if key in owned:
             raise ValueError('a ptx or cloth key is owned by another table')
+    taken = set(owned) | {k for t, keys in plan[:len(KINDS)] for k in keys}
+    for t, keys in plan[len(KINDS):]:
+        if any(key in taken for key in keys):
+            raise ValueError('an ocean key is owned by another table')
     if not 1 <= args.jobs <= 4:
         raise ValueError('jobs must be 1..4')
     if args.check:
@@ -318,10 +412,23 @@ def run(args) -> int:
     outputs = {}
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for t, keys in plan:
-            rows = list(pool.map(lambda k: make_row(t['kind'], k, records[f'{k:016x}'], pack, reglod, tc, args.output), keys))
-            if t['kind'] == 'cloth':
-                rows.sort(key=lambda r: r[0])
-            text = table_text(t['kind'], t['head'], rows)
+            if t['kind'] == 'ocean':
+                hdir = args.output / 'records' / 'ocean-headers'
+                hdir.mkdir(parents=True)
+                base = Path(config['v41_header']).read_text(encoding='utf-8')
+                headers = {}
+                for v in OCEAN_VARIANTS:
+                    headers[v] = hdir / f'shader_common-{v}.h'
+                    headers[v].write_text(ocean_header(base, v), encoding='utf-8', newline='\n')
+                per_key = list(pool.map(lambda k: make_ocean(k, records[f'{k:016x}'], pack, tc, args.output, headers), keys))
+                made = {v: [r[v] for r in per_key] for v in OCEAN_VARIANTS}
+                rows = [r for v in OCEAN_VARIANTS for r in made[v]]
+                text = ocean_table_text(t['head'], made)
+            else:
+                rows = list(pool.map(lambda k: make_row(t['kind'], k, records[f'{k:016x}'], pack, reglod, tc, args.output), keys))
+                if t['kind'] == 'cloth':
+                    rows.sort(key=lambda r: r[0])
+                text = table_text(t['kind'], t['head'], rows)
             path = args.output / t['name']
             path.write_text(text, encoding='utf-8', newline='\n')
             digest = sha(path.read_bytes())

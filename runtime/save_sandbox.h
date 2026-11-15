@@ -32,6 +32,16 @@
 //
 // POSIX only. The log goes to the Android log when <android/log.h> can be included, to stderr otherwise (the plain
 // host tests in agents/save-sandbox/tests compile this file as is).
+//
+// PLAY MODE SANDBOX (Update 1, play_mode.h; the only change is one branch in filesRootFor()): when the launcher latched
+// Sandbox, the root is <base>/sandbox-mode/g<N>, where <base> is what the switch above gives (the files root, or a test
+// sandbox, so a device test plays a copy of a copy). <base>/sandbox-mode/CURRENT names the generation (one line "g<N>",
+// written to a temporary file and renamed). The first start copies <base>/saves and <base>/profile into a new g<N>
+// with the same verified copy as `copy` above, writes SANDBOX_READY, then CURRENT. Later starts reuse CURRENT's
+// generation under the `reuse` rules. A generation without SANDBOX_READY (an interrupted copy) is neither reused nor
+// removed; the next start makes g<N+1>. Mode 2 (fresh) always makes g<N+1>. Any failure gives FailedRoot, never <base>:
+// no saves state at all, and the story saves are never opened for writing. Story mode (or no request) leaves the root
+// exactly as before.
 
 #include <algorithm>
 #include <array>
@@ -54,6 +64,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "play_mode.h"
+
 #if __has_include(<android/log.h>)
 #include <android/log.h>
 #define RECOMP_SAVE_SANDBOX_ANDROID_LOG 1
@@ -64,6 +76,10 @@ namespace recomp::bootstrap::save_sandbox {
 inline constexpr const char* SwitchRelative = "/private-trace/diag-save-sandbox";
 inline constexpr const char* SandboxParent = "/saves-sandbox";
 inline constexpr const char* ReadyMarker = "SANDBOX_READY";
+inline constexpr const char* SandboxModeParent = "/sandbox-mode"; // play mode Sandbox: <base>/sandbox-mode/g<N>
+inline constexpr const char* OnlineModeParent = "/online-mode";   // v1040 play mode Online: <base>/online-mode/g<N> (never the story / sandbox roots)
+inline constexpr const char* CurrentFile = "CURRENT";
+inline constexpr unsigned MaximumGeneration = 999999;
 inline constexpr std::size_t MaximumSwitchBytes = 256;
 inline constexpr std::size_t MaximumNameBytes = 64;
 inline constexpr int MaximumCopyDepth = 32;
@@ -501,6 +517,135 @@ inline Roots rootsFor(const std::string& filesRoot, const char* fixedRunId = nul
     return out;
 }
 
+// ---- play mode Sandbox: <base>/sandbox-mode/g<N> ------------------------------------------------------------------
+
+struct ModeRoot {
+    bool ok{false};
+    std::string root;                // the generation directory (ok), else empty
+    std::vector<std::string> lines;  // SAVES_SANDBOX_MODE... log lines, in order
+};
+
+namespace detail {
+
+// "g<N>" with N in 1..MaximumGeneration and no leading zero; 0 for anything else.
+inline unsigned generationNumber(std::string_view name) noexcept {
+    if (name.size() < 2 || name.size() > 7 || name[0] != 'g' || name[1] < '1' || name[1] > '9') { return 0; }
+    unsigned n = 0;
+    for (std::size_t i = 1; i < name.size(); ++i) {
+        if (name[i] < '0' || name[i] > '9') { return 0; }
+        n = n * 10 + unsigned(name[i] - '0');
+    }
+    return n <= MaximumGeneration ? n : 0;
+}
+
+// CURRENT: absent (0, ""), one valid line (N, ""), or anything else (0, why).
+inline std::pair<unsigned, std::string> readCurrent(const std::string& path) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ENOENT) { return {0, {}}; }
+        return {0, errnoText("cannot open " + path + " (a symlink is refused)", errno)};
+    }
+    char buffer[16];
+    std::size_t filled = 0;
+    bool readable = true;
+    while (filled < sizeof buffer) {
+        const auto got = ::read(fd, buffer + filled, sizeof buffer - filled);
+        if (got < 0) { if (errno == EINTR) { continue; } readable = false; break; }
+        if (got == 0) { break; }
+        filled += std::size_t(got);
+    }
+    (void)::close(fd);
+    std::string_view text(buffer, filled);
+    if (!text.empty() && text.back() == '\n') { text.remove_suffix(1); }
+    const unsigned n = readable ? generationNumber(text) : 0;
+    if (n == 0) { return {0, "CURRENT is not one line g<N> (nothing is guessed): " + path}; }
+    return {n, {}};
+}
+
+// tmp + rename: CURRENT never holds a partial line. The temporary name is new (O_EXCL), so nothing existing is written.
+inline bool writeCurrent(const std::string& parent, unsigned generation, std::string& error) {
+    const std::string tmp = parent + "/" + CurrentFile + ".tmp-" + std::to_string(long(::getpid())) + "-g" + std::to_string(generation);
+    if (!writeMarker(tmp, "g" + std::to_string(generation) + "\n", error)) { return false; }
+    if (::rename(tmp.c_str(), (parent + "/" + CurrentFile).c_str()) != 0) { error = errnoText("cannot rename " + tmp, errno); return false; }
+    const int dir = ::open(parent.c_str(), O_RDONLY | O_CLOEXEC);
+    if (dir >= 0) { (void)::fsync(dir); (void)::close(dir); }
+    return true;
+}
+
+} // namespace detail
+
+// Resolves the Sandbox root below `base` (the switch's answer: the files root or a test sandbox). `fresh`: a new
+// generation even when CURRENT names a usable one. Not cached and does not log (filesRootFor does both).
+inline ModeRoot sandboxModeRoot(const std::string& base, bool fresh, const char* parentName = SandboxModeParent) {
+    ModeRoot out;
+    const auto fail = [&](const std::string& why) {
+        out.ok = false; out.root.clear();
+        out.lines.push_back("SAVES_SANDBOX_MODE_FAILED " + why + " (no saves state this run; the story saves are not used)");
+        return out;
+    };
+    if (base.empty() || base.front() != '/') { return fail("base is not an absolute path: " + base); }
+    const std::string parent = base + parentName;
+    if (::mkdir(parent.c_str(), 0700) != 0 && errno != EEXIST) { return fail(detail::errnoText("cannot create " + parent, errno)); }
+    if (!detail::isRealDirectory(parent)) { return fail("not a real directory (a symlink is refused): " + parent); }
+    const auto [current, currentError] = detail::readCurrent(parent + "/" + CurrentFile);
+    if (!currentError.empty()) { return fail(currentError); }
+    if (current != 0 && !fresh) {
+        const std::string dir = parent + "/g" + std::to_string(current);
+        struct stat st{};
+        if (::lstat((dir + "/" + ReadyMarker).c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+            std::string error;
+            if (!detail::isRealDirectory(dir) || !detail::isRealDirectory(dir + "/saves") || !detail::isRealDirectory(dir + "/profile")) {
+                return fail("reuse: generation has no saves/ and profile/ directories: " + dir);
+            }
+            if (!detail::checkOwnTree(dir, 0, error)) { return fail(error); }
+            out.ok = true; out.root = dir;
+            out.lines.push_back("SAVES_SANDBOX_MODE mode=reuse dir=" + dir + " story_root=" + base + " (not written)");
+            return out;
+        }
+        out.lines.push_back("SAVES_SANDBOX_MODE_INCOMPLETE dir=" + dir + " (no SANDBOX_READY: kept, not reused)");
+    }
+    // A new generation: one past every g<N> that exists, complete or not (an interrupted copy is never reused or removed).
+    std::vector<std::string> names;
+    std::string error;
+    if (!detail::sortedNames(parent, names, error)) { return fail(error); }
+    unsigned highest = current;
+    for (const auto& name : names) {
+        const unsigned n = detail::generationNumber(name);
+        struct stat st{};
+        if (n != 0 && n != current && ::lstat((parent + "/" + name + "/" + ReadyMarker).c_str(), &st) != 0) {
+            out.lines.push_back("SAVES_SANDBOX_MODE_INCOMPLETE dir=" + parent + "/" + name + " (no SANDBOX_READY: kept, not reused)");
+        }
+        highest = std::max(highest, n);
+    }
+    if (highest >= MaximumGeneration) { return fail("no generation number left below " + parent); }
+    const unsigned generation = highest + 1;
+    const std::string dir = parent + "/g" + std::to_string(generation);
+    if (::mkdir(dir.c_str(), 0700) != 0) { return fail(detail::errnoText("cannot create " + dir, errno)); }
+    TreeSummary saves, profile;
+    if (!detail::copyTree(base + "/saves", dir + "/saves", saves, error)) { return fail(error); }
+    if (!detail::copyTree(base + "/profile", dir + "/profile", profile, error)) { return fail(error); }
+    const std::string text = std::string("mode=") + (parentName + 1) + "\nsaves_files=" + std::to_string(saves.files) + "\nsaves_bytes=" + std::to_string(saves.bytes)
+            + "\nsaves_sha256=" + saves.digest + "\nprofile_files=" + std::to_string(profile.files) + "\nprofile_sha256=" + profile.digest + "\n";
+    if (!detail::writeMarker(dir + "/" + ReadyMarker, text, error)) { return fail(error); }
+    if (!detail::writeCurrent(parent, generation, error)) { return fail(error); }
+    out.ok = true; out.root = dir;
+    out.lines.push_back("SAVES_SANDBOX_MODE mode=copy dir=" + dir + " saves_files=" + std::to_string(saves.files) + " saves_sha256="
+                        + saves.digest + " profile_sha256=" + profile.digest + " story_root=" + base + " (not written)");
+    return out;
+}
+
+// For a caller that checks the root filesRootFor gave against the one it expects (the iOS shell's bot-session check,
+// Main.mm startWorker: `filesRootFor(root) == <root>/saves-sandbox/ios-bot-<session>`; review V-18 / T10). Story (or
+// nothing latched): exactly `expected`. Sandbox: exactly `expected`/sandbox-mode/g<N>. Anything else is false.
+inline bool rootMatches(std::string_view actual, std::string_view expected) noexcept {
+    const auto latched = play_mode::latch.load(std::memory_order_acquire);
+    if (!play_mode::sandboxLike(latched)) { return actual == expected; }
+    const std::string_view middle = latched == play_mode::LatchedOnline ? OnlineModeParent : SandboxModeParent;   // v1040
+    if (actual.size() <= expected.size() + middle.size() + 1 || actual.substr(0, expected.size()) != expected) { return false; }
+    const auto rest = actual.substr(expected.size());
+    return rest.substr(0, middle.size()) == middle && rest[middle.size()] == '/' && detail::generationNumber(rest.substr(middle.size() + 1)) != 0;
+}
+
 // The one call of guest_import_registry.cpp (savesStateFor: `const std::string root = save_sandbox::filesRootFor(...)`).
 // Returns the root below which v458 puts /saves and /profile: `filesRoot` itself (switch absent), the sandbox directory,
 // or FailedRoot. Resolved once per process and files root (a second registry of the same process gets the same answer
@@ -516,15 +661,24 @@ inline Roots rootsFor(const std::string& filesRoot, const char* fixedRunId = nul
     const auto found = resolved.find(filesRoot);
     if (found != resolved.end()) { return found->second; }
     const Roots roots = rootsFor(filesRoot);
-    if (!roots.line.empty()) {
+    const auto log = [](bool ok, const std::string& line) {
 #if defined(RECOMP_SAVE_SANDBOX_ANDROID_LOG)
-        __android_log_print(roots.ok ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, "RecompSaves", "%s", roots.line.c_str());
+        __android_log_print(ok ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, "RecompSaves", "%s", line.c_str());
 #else
-        std::fprintf(stderr, "RecompSaves %s\n", roots.line.c_str());
+        (void)ok;
+        std::fprintf(stderr, "RecompSaves %s\n", line.c_str());
 #endif
-    }
+    };
+    if (!roots.line.empty()) { log(roots.ok, roots.line); }
     // (ok: the files root or the sandbox directory, never empty. Not ok: FailedRoot, whatever else went wrong.)
-    return resolved.emplace(filesRoot, roots.ok && !roots.filesRoot.empty() ? roots.filesRoot : std::string(FailedRoot)).first->second;
+    const std::string base = roots.ok && !roots.filesRoot.empty() ? roots.filesRoot : std::string(FailedRoot);
+    // Play mode (play_mode.h): latched here, so a request after the saves state exists is refused. Story: `base`.
+    const play_mode::PlayMode mode = play_mode::settle();
+    if (mode == play_mode::PlayMode::Story || base == FailedRoot) { return resolved.emplace(filesRoot, base).first->second; }
+    const ModeRoot sandbox = sandboxModeRoot(base, mode == play_mode::PlayMode::SandboxFresh,
+                                             mode == play_mode::PlayMode::Online ? OnlineModeParent : SandboxModeParent);   // v1040
+    for (const auto& line : sandbox.lines) { log(sandbox.ok, line); }
+    return resolved.emplace(filesRoot, sandbox.ok ? sandbox.root : std::string(FailedRoot)).first->second;
 }
 
 } // namespace recomp::bootstrap::save_sandbox

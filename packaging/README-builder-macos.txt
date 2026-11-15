@@ -18,15 +18,20 @@ STEPS
 -----
 1. Unpack this folder. If macOS blocks a builder program, allow it in System Settings > Privacy & Security (Open
    Anyway), then run the command again.
-2. In Terminal, inside the builder folder, in this order (./builder with no word prints these steps):
+2. Easiest: open the builder folder and double-click builder (it opens in Terminal). It asks which app (iOS or
+   Duo), then for Disc 2 (Play) and Disc 1 (Install): drag each .iso file onto the Terminal window (or type its full
+   path) and press Enter. It shows the NDK's terms before fetching it, then checks, builds and says where your
+   unsigned app is. Start only builder: nothing under builder/sources/ is meant to be run.
+3. Or use the command line: in Terminal, inside the builder folder, in this order:
      ./builder fetch --accept-ndk-license
-     ./builder build --duo or --ios --play-disc PLAY-DISC.iso --install-disc INSTALL-DISC.iso
+     ./builder build --duo or --ios --play-disc "PLAY-DISC.iso" --install-disc "INSTALL-DISC.iso"
      ./builder sign --ipa UNSIGNED.ipa --identity "Apple Development: you@example.com" --profile-file YOUR.mobileprovision --out SIGNED.ipa
-   ./builder check checks the package and your Mac without building.
-3. The build writes an unsigned .ipa with no disc files inside to local-analysis/builder/work/out in the builder
+   ./builder check checks the package and your Mac without building. The ISOs can be anywhere: give their full
+   paths (in quotes if a path has spaces).
+4. The build writes an unsigned .ipa with no disc files inside to local-analysis/builder/work/out in the builder
    folder. Your app's bundle identifier is made once and printed at the end: ALWAYS SIGN WITH THAT IDENTIFIER
    (another one makes a new app with empty storage); --bundle-id ID chooses your own for one build.
-4. Sign it with the sign step or with your usual tools, install it, then import the discs on the device:
+5. Sign it with the sign step or with your usual tools, install it, then import the discs on the device:
    README-ios.txt (iPad and iPhone) and README-duo.txt (the Duo), next to this file.
 
 A build that was interrupted goes on where it stopped when the build step is run again. If the builder stops with

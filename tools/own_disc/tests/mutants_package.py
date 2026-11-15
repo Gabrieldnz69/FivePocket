@@ -13,6 +13,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 COPIED = ('tools/own_disc', 'tools/fp_codegen', 'tools/iter')     # what test_package.py reads under PACKAGE_SRC
 H = 'tools/own_disc/host_support.py'
+C = 'tools/own_disc/checkout_refusal.py'
 B = 'tools/own_disc/builder.py'
 D = 'tools/own_disc/disc_builder.py'
 I = 'tools/iter/iterate.py'
@@ -148,6 +149,13 @@ MUTANTS = [
  (35, H, "        while left > 0:\n            chunk = os.read(fd, left)\n            if not chunk:\n                break\n            chunks.append(chunk)\n            left -= len(chunk)\n        return b''.join(chunks)", "        return os.read(fd, min(size, 64))"),
  (35, H, "    with _SEEK_LOCK:\n        os.lseek(fd, offset, os.SEEK_SET)", "    if True:\n        os.lseek(fd, offset, os.SEEK_SET)"),
  (35, H, "pread = os.pread if hasattr(os, 'pread') else pread_by_seek", "pread = pread_by_seek"),
+ # 56: the git-repository refusal (Discord 2026-11-06): one wording that says where, why and what to do
+ (56, C, "            if not path.is_relative_to(parent / 'local-analysis'):\n                raise CheckoutRefusal(", "            if False:\n                raise CheckoutRefusal("),
+ (56, C, "is inside a git repository (found at {repository}). The builder", "is inside a git repository. The builder"),
+ (56, B, "    except checkout_refusal.CheckoutRefusal as error:  # (complete advice of its own: not the \"intact release\" tail below)\n        print(f'REFUSED: {error}. No automatic retry: run check again from the new folder.')\n        return 2\n", ""),
+ (56, D, "                raise BuilderError(checkout_refusal.checkout_refusal_text(what, path, parent), EXIT_USAGE)", "                raise BuilderError(f'{what} {path} is in a checkout', EXIT_USAGE)"),
+ # 57: the shipped recipe record pins host_support.py (a helper of two recipe passes): 9d8438b's kind of edit must be seen
+ (57, H, "def private_output(path: Path) -> None:", "def private_output(path: Path, what: str = 'output folder') -> None:"),
 ]
 
 

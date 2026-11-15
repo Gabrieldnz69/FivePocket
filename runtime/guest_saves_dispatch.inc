@@ -69,6 +69,7 @@ if (auto* sv = savesStateFor(this, nativeXamAddress_ != 0 && signedOutUsersBound
     };
     const auto stackArgument = [&](unsigned index, std::uint32_t& value) { return call.readArgument32(*addressSpace_, index, value); };
     const bool user0 = call.argument32(0) == 0;
+#include "signin_spoof_registry.inc" // upd1-spoof: Sandbox + diag-online-local only (user 0 signed in online, loopback XNet)
 
     // ---- Sign-in and identity (user 0 is a local, not Live, profile) -------------------------------------------
     if (importName == "__imp__XamUserGetSigninState" && user0) {

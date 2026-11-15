@@ -24,6 +24,9 @@ final class SettingsSchema {
 
     static final int VERSION = 1;
 
+    /** Update 1: the Performance page's preset (PerformancePresets): the app's own row, kept in settings.json, written to no game file. */
+    static final String PERFORMANCE_PRESET = "performancePreset";
+
     static final String FRAME_CAP = "frameCap", SCALER = "scaler", FSR_SHARPNESS = "fsrSharpnessTenths",
             RENDER_SCALE = "renderScalePercent", FRAME_GENERATION = "frameGeneration", FPS_OVERLAY = "fpsOverlay",
             WORLD_TRAFFIC = "worldTraffic", WORLD_PEDESTRIANS = "worldPedestrians", WORLD_PARKED_CARS = "worldParkedCars",
@@ -75,7 +78,9 @@ final class SettingsSchema {
             SettingSpec.slider(WORLD_PARKED_CARS, "World", "Parked cars", WORLD_DENSITY_MIN, 100, 5, 100, false),
             SettingSpec.slider(WORLD_SCENARIO_PEDESTRIANS, "World", "Scenario pedestrians", WORLD_DENSITY_MIN, 100, 5, 100, false),
             SettingSpec.slider(WORLD_DRAW_DISTANCE, "World", "Draw distance", WORLD_DRAW_DISTANCE_MIN, 100, 5, 100, false),
-            SettingSpec.toggle(INPUT_UNBUFFERED, "Controller", "Low-delay stick input")));
+            SettingSpec.toggle(INPUT_UNBUFFERED, "Controller", "Low-delay stick input"),
+            SettingSpec.choice(PERFORMANCE_PRESET, "Performance", "Preset", PerformancePresets.IDS, PerformancePresets.LABELS,
+                    PerformancePresets.MAX, false)));
 
     /** One line of the row (about 100 characters fit): what a render size above 100 % is in a build without stage B, and is not. */
     static final String HINT_SUPERSAMPLING = "Supersampling through a 1280x720 picture: smoother edges, more heat. Not native 1080p.";

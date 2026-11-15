@@ -1,4 +1,5 @@
 #pragma once
+#include "lower_backdrop.h" // v1103: the lower screen's creator / loading-card backdrop (the renderer and the presenter read it)
 // hud3 (v585): the player's health, armour and wanted level for the second screen's own HUD, read straight from guest memory
 // (read-only, relaxed aligned loads; no guest code runs, nothing is written). Every address and offset below comes from our
 // own recompiled code (the validated-ppc asm comments of the native handlers, found through the registration calls to
@@ -16,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include "finish_trap_diag.h" // v1670: the guest-memory lease (GuestLease below)
 
 namespace recomp::gpu::hud {
 constexpr std::uint32_t PlayerSlotGlobal=0x8394B8B0u,PlayerSlotPed=4,EntityType=20,EntityHealth=192,EntityMaxHealth=384,PedArmour=3588,
@@ -24,7 +26,18 @@ constexpr std::uint8_t TypePed=4;
 constexpr float ArmourMax=100.0f; // (get_player_max_armour's default; armour above it fills the bar)
 
 // The guest memory base, set once by trace_runner.cpp after the address space is reserved (null: never read).
+// v1670: cleared before the space is released, and NOT read by the renderers any more: every reader outside the guest threads (the
+// second screen, the direct presenter, the lower screen, frame generation's cutscene check, the map tap, the phone POV, the help text)
+// holds a GuestLease for its read instead (a bare clear would still race a reader that loaded the base just before the munmap).
 inline std::atomic<const std::uint8_t*>& guestBase() noexcept {static std::atomic<const std::uint8_t*> b{nullptr};return b;}
+// v1670 (Update 1 candidate; the v1620 touch-context lease, finish_trap_diag.h, extended to the HUD readers): published by trace_runner.cpp
+// with the address space and revoked (readers drained) before ~GuestAddressSpace munmaps it. base() is null before the publish and after
+// the revoke. Hold one only around guest loads and the plain code using them (no wait, no Vulkan call, no lock the stopping thread could
+// hold): revoke() spins until every reader has left.
+struct GuestLease {
+    ::recomp::fintrap::LeaseRead read{::recomp::fintrap::touchLease()};
+    const std::uint8_t* base() const noexcept {return read.base;}
+};
 
 inline bool guestPointer(std::uint32_t a,std::uint32_t align) noexcept {return a>=0x10000u && a<=0xFFFF0000u && !(a&(align-1));}
 

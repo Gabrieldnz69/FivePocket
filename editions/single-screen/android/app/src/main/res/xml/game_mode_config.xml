@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 13+ game mode: performance and battery modes supported; the OS may not downscale the render or override the
+     frame rate (FivePocket paces its own presentation). -->
+<game-mode-config xmlns:android="http://schemas.android.com/apk/res/android"
+    android:supportsPerformanceGameMode="true"
+    android:supportsBatteryGameMode="true"
+    android:allowGameAngleDriver="false"
+    android:allowGameDownscaling="false"
+    android:allowGameFpsOverride="false" />

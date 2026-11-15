@@ -22,6 +22,7 @@ SCRATCH = REPO / 'local-analysis' / 'test-tmp'      # inside the checkout's priv
 sys.path.insert(0, str(SRC / 'tools/own_disc'))
 import builder as b
 import host_support as hs
+import checkout_refusal
 import disc_builder as db
 
 
@@ -146,6 +147,29 @@ class Package(unittest.TestCase):
             b.fetch(self.release, self.cache, True, self.archive)
         self.assertFalse((self.cache / self.ndk['sha256'][:16]).exists())
 
+    def test_12b_fetch_refuses_early_past_the_windows_path_limit(self):
+        # 2026-11-10 Windows on ARM: long paths off (the Windows default), the NDK's 176-character member under a 45-character cache
+        # failed mid-unpack with a raw Errno 2. With long paths off, a path over 259 characters is refused before unpacking.
+        def archive_reaching(depth):        # an archive whose one file lands exactly `depth` characters deep once installed
+            base = len(str(self.cache.resolve() / ('0' * 16))) + 1
+            name = 'android-ndk-fixture/' + 'd' * (depth - base - len('android-ndk-fixture/'))
+            with zipfile.ZipFile(self.archive, 'w') as z: z.writestr(name, b'SYNTHETIC compiler')
+            self.ndk.update(size=self.archive.stat().st_size, sha256=db.sha256_file(self.archive))
+            target = self.cache / self.ndk['sha256'][:16]
+            self.assertEqual(len(str(target.resolve() / name)), depth)
+            return target
+        with mock.patch.object(b, 'long_paths_enabled', return_value=False, create=True):
+            target = archive_reaching(260)
+            with self.assertRaisesRegex(b.Refusal, r'260 characters deep.*move the cache to a shorter folder'):
+                b.fetch(self.release, self.cache, True, self.archive)
+            self.assertFalse(target.exists())
+            self.assertEqual([p for p in self.cache.rglob('*') if p.name != 'download.zip' and p.parent.parent == self.cache], [])
+            target = archive_reaching(259)
+            b.fetch(self.release, self.cache, True, self.archive); self.assertTrue(target.is_dir())
+        with mock.patch.object(b, 'long_paths_enabled', return_value=True, create=True):
+            target = archive_reaching(260)
+            b.fetch(self.release, self.cache, True, self.archive); self.assertTrue(target.is_dir())
+
     def test_13_release_payload_hash(self):
         profile = self.root / 'profile.json'; profile.write_bytes(b'{}')
         release = dict(schema='builder-release/1', host=b.host_id(), profile='profile.json',
@@ -153,6 +177,133 @@ class Package(unittest.TestCase):
         path = self.root / 'release.json'; path.write_text(json.dumps(release))
         b.load_release(path); profile.write_bytes(b'{"changed":true}')
         with self.assertRaisesRegex(b.Refusal, 'missing or changed'): b.load_release(path)
+
+    @contextlib.contextmanager
+    def host(self, plat, build, machine):       # the OS (sys.platform), the interpreter's build (sysconfig), the OS's native CPU
+        with mock.patch.object(b.sys, 'platform', plat), mock.patch('sysconfig.get_platform', return_value=build), \
+             mock.patch.object(b.platform, 'machine', return_value=machine):
+            yield
+
+    def test_13b_release_host_is_the_interpreters_cpu(self):
+        # 2026-11-10 Windows on ARM: the package's x64 Python reported the OS's ARM64 CPU, so the x64 release was refused.
+        profile = self.root / 'profile.json'; profile.write_bytes(b'{}')
+        path = self.root / 'release.json'
+        pin = self.native_program(self.root)
+        def release(host):
+            files, extra = [dict(path='profile.json', sha256=db.sha256_file(profile))], {}
+            if host == 'win32-arm64':           # a Windows on ARM release carries its native compiler programs (test_13e)
+                files.append(dict(path=pin['path'], sha256=pin['sha256'])); extra['compiler_overlay'] = dict(files=[pin])
+            path.write_text(json.dumps(dict(schema='builder-release/1', host=host, profile='profile.json', files=files, **extra)))
+            return path
+        on = self.host
+        with on('win32', 'win-amd64', 'ARM64'):                     # x64 interpreter, emulated on an ARM64 OS
+            b.load_release(release('win32-x86_64'))
+            with self.assertRaisesRegex(b.Refusal, 'wrong or missing release for win32-x86_64'): b.load_release(release('win32-arm64'))
+        with on('win32', 'win-arm64', 'ARM64'):                     # a native ARM64 interpreter: the match stays exact
+            b.load_release(release('win32-arm64'))
+            with self.assertRaisesRegex(b.Refusal, 'wrong or missing release for win32-arm64'): b.load_release(release('win32-x86_64'))
+        with on('win32', 'win-amd64', 'AMD64'): self.assertEqual(b.host_id(), 'win32-x86_64')
+        with on('darwin', 'macosx-11.0-arm64', 'arm64'): self.assertEqual(b.host_id(), 'darwin-arm64')
+        with on('darwin', 'macosx-10.9-universal2', 'x86_64'): self.assertEqual(b.host_id(), 'darwin-x86_64')
+        with on('linux', 'linux-aarch64', 'aarch64'): self.assertEqual(b.host_id(), 'linux-arm64')
+
+    def test_13c_windows_on_arm_is_refused_at_check(self):
+        # 2026-11-10: the x64 toolchain emulated on a Snapdragon X2 laptop folded one FFmpeg constant 1 ulp off, an hour into
+        # the build. check now refuses such a PC before anything runs; an x64 PC passes this guard to the next checks.
+        profile = self.root / 'profile.json'; profile.write_bytes(b'{}')
+        release = self.root / 'release.json'
+        release.write_text(json.dumps(dict(schema='builder-release/1', host='win32-x86_64', profile='profile.json',
+                                           files=[dict(path='profile.json', sha256=db.sha256_file(profile))])))
+        argv = ['--release', str(release), '--cache', str(self.cache), 'check', '--work', str(self.root / 'work')]
+        def run(machine):
+            with self.host('win32', 'win-amd64', machine), contextlib.redirect_stdout(io.StringIO()) as out:
+                code = b.main(argv)
+            return code, out.getvalue()
+        code, out = run('ARM64')
+        self.assertNotEqual(code, 0); self.assertIn("Windows on ARM can't build a bit-identical release", out)
+        self.assertFalse((self.root / 'work').exists()); self.assertFalse(self.cache.exists())
+        code, out = run('AMD64')
+        self.assertNotIn('Windows on ARM', out); self.assertIn('80 characters', out)     # the next guard: this test's long folder
+
+    def native_program(self, folder, name='native.exe', data=b'SYNTHETIC native compiler', replaces='bin/compiler.txt'):
+        """A native compiler program in a package folder and its overlay pin (the Windows on ARM release carries the ARM64
+        clang that replaces the NDK's x64 one)."""
+        program = folder / name; program.parent.mkdir(parents=True, exist_ok=True); program.write_bytes(data)
+        return dict(path=name, replaces=replaces, sha256=db.sha256_file(program), size=len(data))
+
+    def test_13d_an_overlay_release_builds_with_its_native_compiler_programs(self):
+        # 2026-11-11 Windows on ARM: the NDK publishes x64 compiler programs only, and emulated they fold floating point differently.
+        # A release that lays native programs over the NDK hands the engine that folder: the declared program replaced,
+        # every other file the verified NDK's, the NDK's own folder untouched, and no deeper (Windows' path limit).
+        with zipfile.ZipFile(self.archive, 'w') as z:
+            z.writestr('android-ndk-fixture/bin/compiler.txt', b'SYNTHETIC x64 compiler')
+            z.writestr('android-ndk-fixture/bin/linker.txt', b'SYNTHETIC x64 linker')
+        self.ndk.update(size=self.archive.stat().st_size, sha256=db.sha256_file(self.archive))
+        (self.root / 'fixture').mkdir(); fx, release = self.make_release()
+        pin = self.native_program(fx.side, 'native/compiler-arm64.txt')
+        data = json.loads(release.read_text())
+        data['files'].append(dict(path=pin['path'], sha256=pin['sha256'])); data['compiler_overlay'] = dict(files=[pin])
+        release.write_text(json.dumps(data))
+        base, handed = ['--release', str(release), '--cache', str(self.cache)], []
+        build = base + ['build', '--work', str(fx.work), '--play-disc', str(fx.disc)]
+        def engine(argv):
+            handed.append(Path(os.environ['BUILDER_NDK_ROOT'])); return 0
+        with mock.patch.object(b.db, 'main', side_effect=engine), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(b.main(base + ['fetch', '--accept-ndk-license', '--archive', str(self.archive)]), 0, out.getvalue())
+            self.assertEqual(b.main(build), 0, out.getvalue())
+        ndk, = handed
+        own = self.cache / self.ndk['sha256'][:16] / 'android-ndk-fixture'
+        self.assertEqual((ndk / 'bin/compiler.txt').read_bytes(), b'SYNTHETIC native compiler')
+        self.assertEqual((ndk / 'bin/linker.txt').read_bytes(), b'SYNTHETIC x64 linker')
+        self.assertEqual((own / 'bin/compiler.txt').read_bytes(), b'SYNTHETIC x64 compiler')
+        self.assertEqual(len(str(ndk)), len(str(own)))
+        (ndk / 'bin/compiler.txt').write_bytes(b'SYNTHETIC x64 compiler')      # the NDK's program back in place of the native one
+        with mock.patch.object(b.db, 'main', side_effect=engine), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertNotEqual(b.main(build), 0)
+        self.assertIn('compiler files changed', out.getvalue()); self.assertEqual(len(handed), 1)
+
+    def test_13e_a_windows_on_arm_release_without_native_compiler_programs_is_refused(self):
+        # A Windows on ARM package that would run the NDK's x64 compiler (emulated) is refused before anything is fetched or
+        # built; the same package with native programs passes this guard to the next one.
+        profile = self.root / 'profile.json'; profile.write_bytes(b'{}')
+        pin = self.native_program(self.root)
+        release = self.root / 'release.json'
+        files = [dict(path='profile.json', sha256=db.sha256_file(profile)), dict(path=pin['path'], sha256=pin['sha256'])]
+        def run(words, overlay):
+            data = dict(schema='builder-release/1', host='win32-arm64', profile='profile.json', ndk=self.ndk, files=files)
+            if overlay: data['compiler_overlay'] = dict(files=[pin])
+            release.write_text(json.dumps(data))
+            with self.host('win32', 'win-arm64', 'ARM64'), contextlib.redirect_stdout(io.StringIO()) as out:
+                code = b.main(['--release', str(release), '--cache', str(self.cache)] + words)
+            return code, out.getvalue()
+        for words in (['fetch', '--accept-ndk-license', '--archive', str(self.archive)], ['check', '--work', str(self.root / 'work')]):
+            with self.subTest(command=words[0]):
+                code, out = run(words, overlay=False)
+                self.assertNotEqual(code, 0); self.assertIn('carries no native compiler programs', out)
+                self.assertFalse(self.cache.exists()); self.assertFalse((self.root / 'work').exists())
+                code, out = run(words, overlay=True)
+                self.assertNotIn('native compiler', out); self.assertIn('80 characters', out)   # the next guard: this test's long folder
+
+    def test_13f_native_compiler_pins_fail_closed(self):
+        profile = self.root / 'profile.json'; profile.write_bytes(b'{}')
+        pin = self.native_program(self.root)
+        listed = [dict(path='profile.json', sha256=db.sha256_file(profile)), dict(path=pin['path'], sha256=pin['sha256'])]
+        release = self.root / 'release.json'
+        def load(overlay, files=listed):
+            release.write_text(json.dumps(dict(schema='builder-release/1', host=b.host_id(), profile='profile.json', ndk=self.ndk,
+                                               files=files, compiler_overlay=overlay)))
+            return b.load_release(release)
+        for overlay, files, refusal in ((dict(files=[]), listed, 'native compiler overlay is not pinned'),
+                                        (dict(files=[dict(pin, sha256='0' * 64)]), listed, 'not hash-bound in the release: native.exe'),
+                                        (dict(files=[pin]), listed[:1], 'not hash-bound in the release: native.exe'),
+                                        (dict(files=[dict(pin, replaces='../escape')]), listed, 'invalid package path'),
+                                        (dict(files=[pin, dict(pin, replaces='BIN/Compiler.txt')]), listed, 'replaces BIN/Compiler.txt twice')):
+            with self.subTest(refusal=refusal), self.assertRaisesRegex(b.Refusal, refusal):
+                load(overlay, files)
+        loaded, root = load(dict(files=[dict(pin, replaces='bin/other.txt')]))      # the release reads; the NDK has no such file
+        self.fetch()
+        with self.assertRaisesRegex(b.Refusal, 'replaces bin/other.txt, which the compiler archive does not have'):
+            b.fetch_compiler_overlay(loaded, root, self.cache)
 
     def test_14_windows_path_refusal(self):
         with mock.patch.object(b.sys, 'platform', 'win32'):
@@ -275,7 +426,7 @@ class Package(unittest.TestCase):
         # shipped inside the artifact, not a stale previously built archive.
         artifact = self.root / 'builder.pyz'
         with zipfile.ZipFile(artifact, 'w') as z:
-            for name in ('builder.py', 'disc_builder.py', 'host_support.py'):
+            for name in ('builder.py', 'disc_builder.py', 'host_support.py', 'checkout_refusal.py'):
                 z.write(SRC / 'tools/own_disc' / name, name)
             z.writestr('__main__.py', 'import builder\nraise SystemExit(builder.main())\n')
         result = subprocess.run([sys.executable, str(artifact), '--release', str(release), '--cache', str(self.cache),
@@ -867,6 +1018,159 @@ class Package(unittest.TestCase):
         rel.write_text(json.dumps({'profile': 'p.json', 'profiles': {'ios': 'p.json', 'duo': 'd.json'},
                                    'ndk': dict(self.ndk), 'estimates': {'min_free_bytes': 16 << 30}}))
         self.assertIn(b.ANDROID_ELSEWHERE, b.how_to(rel))
+
+    def test_56_a_builder_inside_a_git_repository_says_where_why_and_what_to_do(self):
+        # Discord, 2026-11-06: a player who ran the builder inside a git repository got "output is in a checkout: choose its
+        # local-analysis directory ... use an intact release". The refusal now names the folder and the repository, says
+        # why, says what a player does (the Releases download, outside any repository, no clone needed) and keeps the
+        # developer's way; the "intact release" tail is not added to it. One wording for every place that refuses.
+        fx, release = self.packaged()
+        repo = self.root / 'some-clone'; (repo / '.git').mkdir(parents=True)
+        cases = (('work folder', ['--cache', str(self.cache), 'build', '--work', str(repo / 'b'), '--play-disc', str(fx.disc)], repo / 'b'),
+                 ('work folder', ['--cache', str(self.cache), 'check', '--work', str(repo / 'w')], repo / 'w'),
+                 ('cache folder', ['--cache', str(repo / 'cache'), 'check', '--work', str(fx.work)], repo / 'cache'))
+        for what, argv, place in cases:
+            with self.subTest(argv[2:4]):
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(b.main(['--release', str(release)] + argv), 2)
+                text = out.getvalue()
+                self.assertTrue(text.startswith(f'REFUSED: the {what} {place.resolve()} is inside a git repository (found at {repo.resolve()}).'), text)
+                for needed in ("The builder only writes your game files outside git repositories, so they can't be committed by accident.",
+                               'unzip the builder download from the Releases page into a normal folder outside any git repository',
+                               os.path.join('Desktop', 'FivePocket-Builder'), "you don't need to clone the repository to build",
+                               f'(Developers: inside a checkout, put the work folder under its local-analysis{os.sep} folder: {repo.resolve() / "local-analysis"})',
+                               'run check again from the new folder'):
+                    self.assertIn(needed, text)
+                for gone in ('intact release', 'choose its local-analysis directory', 'output is in a checkout'):
+                    self.assertNotIn(gone, text)
+                self.assertFalse(place.exists())
+        # the engine and the stage tools (disc_builder.check_private_path) refuse with the same words
+        with self.assertRaises(db.BuilderError) as caught:
+            db.check_private_path(repo / 'out', 'bundle directory')
+        self.assertEqual(str(caught.exception), checkout_refusal.checkout_refusal_text('bundle directory', (repo / 'out').resolve(), repo.resolve()))
+        self.assertEqual(caught.exception.code, db.EXIT_USAGE)
+        # and inside the repository's local-analysis/ (the developer's way) nothing is refused
+        checkout_refusal.private_output(repo / 'local-analysis' / 'work', 'work folder')
+        db.check_private_path(repo / 'local-analysis' / 'out', 'bundle directory')
+
+    def test_57_the_shipped_recipe_record_still_pins_this_tree_s_tools(self):
+        # 2026-11-06: 9d8438b edited host_support.py, a helper of two recipe passes (direct_calls, vmx_all); every fresh build
+        # then refused at the recipe stage ("tool helpers changed"), and no test saw it. The recipe record the shipped profile
+        # names must accept this tree's pass tools and their whole import closures, by the recipe tool's own check.
+        profile = REPO / 'local-analysis/builder/portable/profile-portable-1f-3.json'
+        if not profile.is_file():
+            self.skipTest('no private profile in this checkout')
+        stage = next(s for s in json.loads(profile.read_text(encoding='utf-8'))['stages'] if s['id'] == 'recipe')
+        record = REPO / stage['inputs']['recipe'].replace('${repo}/', '')
+        recipe = json.loads(record.read_text(encoding='utf-8'))
+        problems = []
+        with mock.patch.object(rp, 'TOOLS_ROOT', SRC):
+            for p in recipe['passes'] + recipe.get('base_passes', []):
+                rp.check_tool(p['tool'], problems)
+        self.assertEqual(problems, [], record.name)
+        # and the refusal's wording lives outside every pass's closure
+        with mock.patch.object(rp, 'TOOLS_ROOT', SRC):
+            for p in recipe['passes'] + recipe.get('base_passes', []):
+                self.assertNotIn(SRC / 'tools/own_disc/checkout_refusal.py', rp.closure(SRC / p['tool']['path']))
+
+    def guided_run(self, release, answers, **kw):
+        """runs the guided mode with typed answers; returns (exit code, what it printed, the prompts it showed)"""
+        prompts, left = [], list(answers)
+        def ask(prompt):
+            prompts.append(prompt)
+            if not left: raise EOFError
+            return left.pop(0)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = b.guided(release, ask=ask, cache=kw.pop('cache', self.cache), **kw)
+        return code, out.getvalue(), prompts
+
+    def test_58_a_double_click_guides_a_player_from_the_discs_to_a_verified_bundle(self):
+        # Discord report 2026-11-07: a double click showed only "press Enter"; the player did not know what to do
+        fx, release = self.packaged()
+        install = self.root / 'install disc'; install.mkdir()
+        inside_repo = REPO / 'tools' / 'not-a-private-folder'                # an output folder in a checkout is refused, then asked again
+        code, said, prompts = self.guided_run(release, [f'"{fx.disc}"', str(install), str(inside_repo), ''])
+        self.assertEqual(code, 0, said)
+        bundle = fx.side / 'local-analysis' / 'builder' / 'work' / 'out' / 'code-fixture-generic.bundle'
+        self.assertTrue(bundle.is_file(), said)
+        self.assertIn('REFUSED', said.split('Step 1')[0])                   # the repo folder, before any step ran
+        self.assertFalse(inside_repo.exists())
+        steps = [line for line in said.splitlines() if line.startswith('=== Step')]
+        self.assertEqual([s.split(': ', 1)[1].split(' (')[0].rstrip(' =') for s in steps],
+                         ['Checking this computer', 'Building', 'Verifying the bundle'])   # compilers already fetched: no fetch step
+        self.assertIn(f'Your package is at {bundle}', said)
+        self.assertIn(f'{bundle.name}: verified.', said.split('Verifying the bundle')[1])   # the verify step itself ran
+        self.assertEqual(sum('Disc 2 (Play)' in p for p in prompts), 1)
+        self.assertNotIn('close this window', ''.join(prompts))            # after a double click the launcher waits, not this
+
+    def test_59_a_disc_dropped_onto_the_program_fills_its_own_slot(self):
+        fx, release = self.packaged()
+        install = self.root / 'install disc'; install.mkdir()
+        self.assertEqual(b.dropped_disc([str(install)]), install)
+        iso = self.root / 'Disc2-Play.ISO'; iso.write_bytes(b'')
+        self.assertEqual(b.dropped_disc([str(iso)]), iso)
+        (self.root / 'check').mkdir()                                           # a folder named like a command, beside a disc
+        cwd = os.getcwd(); os.chdir(self.root); self.addCleanup(os.chdir, cwd)
+        for words in (['check'], ['Disc2-Play.ISO'], [str(self.root / 'missing.iso')], [str(iso), 'build'], [str(fx.profile_path)]):
+            self.assertIsNone(b.dropped_disc(words), words)                   # commands and anything else stay the command line
+        os.chdir(cwd)
+        # the install disc dropped: only the play disc is asked for; the window waits at the end (the launcher does not)
+        code, said, prompts = self.guided_run(release, [str(fx.disc), '', ''], dropped=install, wait_at_end=True)
+        self.assertEqual(code, 0, said)
+        self.assertIn(f'Disc 1 (Install): {install}', said)
+        self.assertFalse(any('Disc 1 (Install)' in p for p in prompts), prompts)
+        self.assertIn('Press Enter to close this window', prompts[-1])
+        # the play disc typed where the install disc is asked for: taken as the play disc, then the install disc asked
+        code, said, prompts = self.guided_run(release, [str(install), str(fx.disc), ''])
+        self.assertEqual(code, 0, said)
+        self.assertIn('That is Disc 1 (Install): taken as Disc 1 (Install)', said)
+        games = fx.profile['games']
+        self.assertEqual(b.disc_role(fx.disc, games), 'play'); self.assertEqual(b.disc_role(install, games), 'install')
+        # an install disc with an executable of its own (the real Disc 1 has one, 2026-11-07 PC run) is still the install disc
+        other = self.root / 'install with exe'; other.mkdir(); (other / 'default.xex').write_bytes(b'not the game executable')
+        self.assertEqual(b.disc_role(other, games), 'install')
+        code, said, prompts = self.guided_run(release, [str(fx.disc), str(other), ''])
+        self.assertEqual(code, 0, said)
+        self.assertNotIn('looks like', said)
+
+    def test_60_a_player_who_declines_the_licences_fetches_and_builds_nothing(self):
+        fx, release = self.packaged()
+        install = self.root / 'install disc'; install.mkdir()
+        empty = self.root / 'fresh cache'
+        code, said, prompts = self.guided_run(release, [str(fx.disc), str(install), '', 'n'], cache=empty)
+        self.assertEqual(code, 1, said)
+        self.assertIn(self.ndk['license_url'], said)
+        self.assertIn('(y/n)', prompts[-1])
+        self.assertFalse(empty.exists())                                     # nothing fetched
+        self.assertFalse((fx.side / 'local-analysis').exists())              # nothing built
+        self.assertNotIn('=== Step', said)
+        # yes: the fetch step runs first, with the switches a player would type (captured here: no download in a test)
+        ran = []
+        with mock.patch.object(b, 'main', side_effect=lambda argv: ran.append(argv) or 1):
+            code, said, _ = self.guided_run(release, [str(fx.disc), str(install), '', 'y'], cache=empty)
+        self.assertEqual(code, 1)
+        self.assertIn('=== Step 1 of 4: Fetching the compilers ===', said)
+        self.assertEqual(ran, [['--release', str(release), '--cache', str(empty), 'fetch', '--accept-ndk-license']])
+        self.assertIn('Stopped at step 1', said)
+
+    def test_62_unpacked_too_deep_on_windows_it_says_where_to_move_the_folder(self):
+        # a player who unpacks into Downloads gets a build folder over Windows' 80 characters; the stages build only inside the
+        # package (2026-11-07 PC run: a work folder outside it failed at codegen), so the folder itself must move
+        fx, release = self.packaged()
+        default = b.default_work(fx.side)
+        with mock.patch.object(b, 'windows_path_too_long', lambda p: Path(p) == default):
+            code, said, prompts = self.guided_run(release, [str(fx.disc)])
+        self.assertEqual(code, 2, said)
+        self.assertIn('C:\\FivePocket\\builder\\builder.exe', said)
+        self.assertEqual(prompts, [])                                         # asked nothing: told before any question
+        self.assertFalse(default.exists())                                    # nothing built
+        self.assertNotIn('--work', said)
+
+    def test_61_paths_pasted_or_dropped_onto_a_terminal_are_read_as_paths(self):
+        self.assertEqual(b.clean_path('  "C:\\Games\\My Discs\\Disc2-Play.iso"  '), 'C:\\Games\\My Discs\\Disc2-Play.iso')
+        self.assertEqual(b.clean_path("'/Users/p/My Discs/d.iso'"), '/Users/p/My Discs/d.iso')
+        if sys.platform != 'win32':                                          # macOS Terminal escapes a dropped path's spaces
+            self.assertEqual(b.clean_path('/Users/p/My\\ Discs/Disc\\ 2\\ \\(Play\\).iso '), '/Users/p/My Discs/Disc 2 (Play).iso')
 
     def test_51_sign_unpacks_signs_and_writes_a_new_ipa(self):
         app = self.root / 'Payload' / 'FivePocket.app'; app.mkdir(parents=True)

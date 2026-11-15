@@ -5,6 +5,8 @@
 // from the GTA IV/Sonic hooks in SanRecomp/gpu/video.cpp. Original CPU behavior
 // and return registers are retained until native presentation takes ownership.
 // Inline draw inputs are copied only inside the executor's exclusive gate.
+#include "app_away.h" // app-away (BUG 02 step 2): awayHold below
+#include "inline_output_owned.h" // v1519: the native indexed Begin may write title-image output words (the particle vertex output)
 #include "index_view.h" // v571
 #include "prime_swap_v245.h" // v245
 #include "pace_caps.h" // pace-caps (lane A): diag-pace-* (paceHold)
@@ -60,6 +62,7 @@ extern "C" std::atomic<int> recomp_diag_loading_screen_shutdown;
 #include "render_hot_path.h"
 #include "render_trims_v366.h" // v366 (d, e)
 #include "loading_handover.h" // loading-race: script render targets before the takeover
+#include "native_stop_takeover.h" // v1069: take over where native stops (EndVertices)
 #include "gta5_draw_vertices.h"
 namespace recomp::bootstrap { std::uint32_t currentGuestThreadToken() noexcept; } // v56 (guest_parallel_wake.h)
 #include "gta5_driver_scissor.h"
@@ -3117,6 +3120,23 @@ bool captureInline(std::uint32_t device,std::uint32_t stack,std::uint32_t link,
         draw?draw->vertices.size():0,draw?draw->textures.size():0,textureBytes,literals);
     if(firstUnsupportedInline)throw std::runtime_error("Unsupported inline shaders: original draw inputs captured");
     if(pending.nativeAllocation) {
+#if defined(RECOMP_DIAGNOSTIC_GENERIC_RENDER)
+        // v1069 (bugfix-stability; native_stop_takeover.h): take over where native stops. The first native inline draw the
+        // loading-screen path cannot complete (another target, a shader pair outside the startup pack: v1066's Online creator
+        // frontend under the held boot loading screen, the loading-race class) takes the generic renderer over instead of stopping
+        // the game; this draw is skipped (as a refused generic draw is), every later draw goes generic. Generic unavailable: the stop.
+        if(gate && !nativeDrawCompleted) {
+            const bool takenBefore=genericTakeover.load(std::memory_order_acquire);
+            bool readyAfter=false;
+            const auto end=recomp::native_stop::atEndVertices(true,false,takenBefore,[&] {
+                return gateRef([&] {genericTakeOver("native-inline-incomplete");readyAfter=genericReady();}) && readyAfter;});
+            if(end==recomp::native_stop::End::TakeOverSkip) {
+                nativeDrawCompleted=true;
+                rendererLog("RENDER_GENERIC_NATIVE_STOP_TAKEOVER call=%u vs_role=%d ps_role=%d vertices=%u stride=%u (draw skipped)\n",
+                    index+1,vsRole,psRole,pending.count,pending.stride);
+            }
+        }
+#endif
         if(!gate || !nativeDrawCompleted || !gateRef([&] {nativeInlineBuffers.at(device).busy=false;}))
             throw std::runtime_error("Native EndVertices did not complete its real draw");
     }
@@ -3857,8 +3877,21 @@ recomp::pace::PrimeLend<recomp_v245::PrimeSwap> paceLend; // (render thread only
         []{return recomp_pace_park_ready && recomp_pace_park_until && recomp_pace_park_ready();},
         [](std::int64_t until){return recomp_pace_park_until(until);});
 }
+// app-away (app_away.h, BUG 02 step 2): while the app's window is gone (Home, another app) the render thread parks here, before the
+// pace-caps hold, in 100 ms slices through the same park (the executor's delay; a refused park ends the hold: no spin) until a window
+// is back; main parks on its acknowledgement meanwhile, so the game stands still. With a window: one acquire load and a return.
+[[gnu::noinline]] void awayHold() {
+    if(!recomp_away::away() || recomp::bootstrap::currentGuestThreadToken()!=recomp_v245::RenderToken)return;
+    const std::int64_t t0=recomp::pace::monotonicNs();bool back=false;
+    const unsigned n=recomp_away::hold(recomp_away::windowBack,
+        []{return recomp_pace_park_ready && recomp_pace_park_until && recomp_pace_park_ready();},
+        [](std::int64_t until){return recomp_pace_park_until(until);},recomp::pace::monotonicNs,&back);
+    if(n || back)rendererLog("RENDER_APP_AWAY hold ms=%lld slices=%u back=%d holds=%llu\n",(long long)((recomp::pace::monotonicNs()-t0)/1000000),n,
+        back?1:0,(unsigned long long)recomp_away::state().holds.load(std::memory_order_relaxed));
+}
 bool genericPresentHook(const PPCContext& ctx) {
 #if defined(RECOMP_DIAGNOSTIC_GENERIC_RENDER)
+    awayHold(); // app-away: held while the app's window is gone (with a window: a load and a return)
     paceHold(0); // pace-caps (lane A): the frame's slot (no cap file: a load and a return)
     {static unsigned presents=0;if(!(++presents%60))switchEpoch.fetch_add(1,std::memory_order_relaxed);} // v330a
     ::recomp_v338_presents.fetch_add(1,std::memory_order_relaxed); // v338 (diagnostic causal spins)
@@ -5302,8 +5335,13 @@ bool finishNativeInlineIndexedBegin(PPCContext& ctx,std::uint8_t* base) {
         const auto vertexOutput=PPC_LOAD_U32(ctx.r1.u32+308),indexOutput=ctx.r17.u32;
         // v26 (diagnostic): v25 reached a gameplay draw whose output pointers are not in the caller's
         // argument area. Accept owned guest heap words; anything else keeps the original Begin.
-        const auto owned=[&](std::uint32_t a){return inlineRegistry->copySerializedGuestArgument(a,4) ||
-            inlineRegistry->copySerializedGuestHeap(a,4);};
+        // v1519 (inline_output_owned.h): + a validated title-image word (the particle renderer's vertex output global);
+        // files/private-trace/diag-inline-image-output-off restores v26's two readers (read once).
+        static const bool imageOutputs=access(RECOMP_APP_PATH("/private-trace/diag-inline-image-output-off"),F_OK)!=0;
+        const auto owned=[&](std::uint32_t a){return ::recomp::inline_output::owned(a,
+            [&](std::uint32_t x){return bool(inlineRegistry->copySerializedGuestArgument(x,4));},
+            [&](std::uint32_t x){return bool(inlineRegistry->copySerializedGuestHeap(x,4));},
+            [&](std::uint32_t x){return bool(inlineRegistry->copySerializedTitleImage(x,4));},imageOutputs);};
         if(!owned(vertexOutput) || !owned(indexOutput)){fallback=true;return;}
         auto& buffer=nativeInlineBuffers[device];
         if(buffer.busy)throw std::runtime_error("Native indexed Begin overlaps an unfinished draw");
@@ -6309,13 +6347,42 @@ PPC_FUNC(sub_83438FE8) {
     recomp_native_probe_register(ctx.r3.u32,ctx.r4.u32);
     __imp__sub_83438FE8(ctx,base);
 }
+// v1154 (trainer-mods): the second registration function sub_8343C360(r3 = hash, r4 = handler, r5 = index) registers the money natives
+// (NETWORK_EARN_FROM_ROCKSTAR 5a3733cc -> 0x82D69D90, NETWORK_GET_VC_WALLET_BALANCE 4f5b781c, NETWORK_INITIALIZE_CASH 66da9935 -> 0x82D69A90,
+// 52 wrapper call sites in chunk 181). The trainer only learned handlers through sub_83438FE8, so AddCash's calls answered "not
+// registered" (t-onlcash153: wallet -1 = the call failed, HUD $0). Record them for the trainer's lists too; the original runs unchanged.
+extern "C" void recomp_trainer_note_native(std::uint32_t hash,std::uint32_t handler) noexcept;
+PPC_FUNC_IMPL(__imp__sub_8343C360);
+PPC_FUNC(sub_8343C360) {
+    PPC_FUNC_PROLOGUE();
+    recomp_trainer_note_native(ctx.r3.u32,ctx.r4.u32);
+    __imp__sub_8343C360(ctx,base);
+}
 
 // world-load (world_load.h; the user's optional sliders, default = the original game): strong hooks of the game's own two
 // per-frame multiplier resets (update list #33 sub_8223F728 and #34 sub_82533758). With every slider at the original the
 // helpers return after one load: no guest access, the originals run unchanged. NEEDS the link's redirect script without
 // these two wrappers (world-load/build/redirect-v458-wl.ld), or the hooks are silently bypassed (RENDER_DIAG_WL hook=0).
 #include "world_load.h"
+// v994 (L0 / E5 / E6): ticked from the update-list #33 hook below (online_l0_hook.inc says why it moved)
+#include "online_l0_hook.inc"
+#include "loading_hold_hook.inc"   // v1050: Online mode holds the boot loading screen (online_mode.h)
+#include "online_spoof_hook.inc"   // v1057: Online mode answers NETWORK_IS_CLOUD_AVAILABLE; the game's warning screens logged
+#include "char_probe_hook.inc"     // v1080: the creator hair probe (read only, Online mode, component 2 / overlay slots 1-2)
+#include "online_stats_cloud_hook.inc"   // v1089: MP stats load / save served from the Online root (the game's own task legs)
+#include "online_photo_cloud_hook.inc"   // v1181: the photo manager's cloud listing answered locally (Snapmatic)
+#include "online_stats_hook.inc"   // v1088: the MP stats slot marked loaded locally in Online mode (H-STATS), stats answers logged
+#include "online_fade_probe.inc"   // v1088: read-only screen-fade probe (lead: the hill before fm_intro's first shot)
+#include "online_econ_log.inc"    // v1088: read-only log of the game's own money natives
+#include "story_create_local.inc"   // v1352: Sandbox + our session: Story scripts' networked creates made local (before the gate hook: CREATE_PED)
+#include "dlc_compat_order.inc"   // v1356: DLC COMPAT pack order -> sorted index after the 1.0 sort (diag-dlc-compat-order, default off)
+#include "online_freemode_gate_hook.inc"   // v1093: the MP character answers (later visits) + the next gates' native logs
+#include "online_ugc_log.inc"   // v1094: read-only logs of maintransition's UGC_* / DATAFILE_* natives (the UGC prefetch path)
 #include "world_load_hooks.inc"
+// Update 1 W1-5 (v953, diagnostic attempt A, LOG ONLY): script launches at sub_82AAC528 + sub_82A9B020 (RENDER_SANDBOX) and the
+// game's vibration requests at sub_8363DA18 (RENDER_DIAG_RUMBLE). Needs local-analysis/update-1/redirect/redirect-v462-upd1a.ld.
+#include "sandbox_launch.inc"
+#include "rumble_diag.inc"
 
 // occlusion package (occlusion_queries.h, diag-oc-queries): the ZPD event an occlusion query's Issue emits. Marked before
 // the original writes its PM4 (so no ring walk can meet the event before its marker), in D3D call order; voided after it
@@ -6972,4 +7039,35 @@ PPC_FUNC(sub_823ABBE0) {
     }
     __imp__sub_823ABBE0(ctx,base);
     captureDriverScissor(device,rectangle,ctx.lr);
+}
+
+// v1193 DIAGNOSTIC (bugfix-stability, GPU-wait freeze; poll_stack.h): sub_82220130 (the TLS getter, 3 instructions) is called by D3D's
+// GPU-wait poll sub_82220140 through this wrapper on every iteration; record that thread's poll frame and wait record. Other callers
+// (lr != 0x822201C0) pass through. The guest function runs unchanged. Needs the redirect script without sub_82220130's bind.
+#include "poll_stack.h"
+#include <chrono>
+extern "C" int recomp_v1198_poll_deliver() noexcept; // v1198 (trace_runner.cpp)
+PPC_FUNC_IMPL(__imp__sub_82220130);
+PPC_FUNC(sub_82220130) {
+    PPC_FUNC_PROLOGUE();
+    if(static_cast<std::uint32_t>(ctx.lr)==recomp::pollstack::PollReturn) {
+        recomp::pollstack::note(ctx.r1.u32,ctx.r31.u32);
+        // v1199: every 2 ms of one wait, deliver a pending deferred tile interrupt (trace_runner.cpp recomp_v1198_poll_deliver). A wait is
+        // its record (r31) AND the timebase sub_8251E820 stored at record+20 when it began: v1198 keyed on the record alone, which is the
+        // same stack address for every BlockOnFence of one call chain, so after the first 2-ms wait it never tried again
+        // (t-onlshow-20261109-0126 froze with FREEZE_IRQ pending=1 deferred=7560 delivered=7559 poll_delivered=0).
+        thread_local std::uint32_t waitRecord=0,waitStamp=0;thread_local std::chrono::steady_clock::time_point waitStart{},nextTry{};
+        const auto now=std::chrono::steady_clock::now();
+        const std::uint32_t stamp=PPC_LOAD_U32(ctx.r31.u32+20);
+        if(ctx.r31.u32!=waitRecord || stamp!=waitStamp){waitRecord=ctx.r31.u32;waitStamp=stamp;waitStart=now;nextTry=now+std::chrono::milliseconds(2);}
+        else if(now>=nextTry) {
+            nextTry=now+std::chrono::milliseconds(2);
+            const int r=recomp_v1198_poll_deliver();
+            static std::atomic<unsigned> lines{0};
+            if(r && lines.fetch_add(1,std::memory_order_relaxed)<256)
+                __android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_DIAG_POLL_DELIVER result=%d fence_wait_record=%08x waited_us=%lld",r,ctx.r31.u32,
+                    (long long)std::chrono::duration_cast<std::chrono::microseconds>(now-waitStart).count());
+        }
+    }
+    __imp__sub_82220130(ctx,base);
 }

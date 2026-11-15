@@ -888,7 +888,7 @@ class WorkDirectory(Base):
                 code, text, _ = self.fx.run(*extra)
                 self.assertEqual(code, db.EXIT_USAGE, text)
                 self.assertIn(needle, text)
-                self.assertIn('refusing to write game-derived files there', text)
+                self.assertIn(f'is inside a git repository (found at {repo.resolve()})', text)   # (the shared wording, test_package test_56)
                 self.assertEqual(self.fx.executed(), [])
                 self.assertEqual(sorted(p.name for p in repo.rglob('*')), ['.git', 'src'])
                 self.fx.profile = saved

@@ -55,11 +55,15 @@ sources and build scripts in this repository and in the builder download.
 | Windows only: LLVM runtime (libc++, libunwind, compiler-rt) | `*.exe` | Apache 2.0 with LLVM Exceptions | `LICENSES/Apache-2.0-WITH-LLVM-exception.txt` |
 | Windows only: MinGW-w64 runtime and winpthreads | `*.exe` | MinGW-w64 runtime terms | `LICENSES/MinGW-w64-runtime.txt`, `LICENSES/MinGW-w64-winpthreads.txt` |
 | Windows only: CPython 3.12 embeddable | `python/` | PSF License 2.0 and its listed parts | `python/LICENSE.txt` (travels with it) |
+| Windows on ARM only: LLVM 18.0.3 clang, llvm-ar, llvm-nm and llvm-objcopy, built for ARM64 from the Android NDK compiler's source (LLVM r522817 + the Android patches) | `host-tools/compiler-arm64` | Apache 2.0 with LLVM Exceptions | `LICENSES/Apache-2.0-WITH-LLVM-exception.txt`, `host-tools/compiler-arm64/LICENSE-*.txt` |
+| Windows on ARM only: Microsoft C/C++ runtime, linked statically into those programs and `builder.exe` | `host-tools/compiler-arm64`, `builder.exe` | Visual Studio Build Tools distributable code | (no notice required) |
 | macOS only: DirectX Shader Compiler v1.9.2607 (Microsoft), built from its source | `host-tools/dxc` | University of Illinois/NCSA, with DXC's third-party notices | `LICENSES/NCSA-DirectXShaderCompiler.txt`, `builder/notices/` |
 | Fetched, not distributed: Android NDK r27c (Google); DirectX Shader Compiler v1.9.2607 (Microsoft; Windows builders only) | builder cache | the publishers' terms, accepted by the player at `builder fetch` | shown by the publisher |
 
 Each builder download contains the complete corresponding source of its host programs (the pinned upstream source
 plus our patches and build scripts) in `builder/sources/`, and the notices of every part it carries in `builder/notices/`.
+The Windows on ARM builder's compiler programs are built from public LLVM source: `host-tools/compiler-arm64/README.txt`
+names the upstream commit, the Android patch set and the build settings.
 
 ## 4. iOS and Duo apps (made by the Mac builder on the player's Mac; never distributed)
 

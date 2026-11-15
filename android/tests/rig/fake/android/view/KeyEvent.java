@@ -5,6 +5,7 @@ public class KeyEvent {
         time=eventTime;this.action=action;this.code=code;this.repeat=repeat;this.device=device;this.source=source;}
     public int getAction(){return action;} public int getKeyCode(){return code;} public int getRepeatCount(){return repeat;}
     public int getDeviceId(){return device;} public long getEventTime(){return time;}
+    public InputDevice getDevice(){return InputDevice.getDevice(device);}   // as Android: the device by its number (MotionEvent has the same)
     public boolean isFromSource(int s){return (source&s)==s;}
     public static String keyCodeToString(int code){
         switch(code){

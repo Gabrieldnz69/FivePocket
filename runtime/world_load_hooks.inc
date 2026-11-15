@@ -15,6 +15,8 @@
 // Observation only: what the previous frame ended with, read before the reset overwrites it.
 PPC_FUNC_IMPL(__imp__sub_8223F728);
 PPC_FUNC(sub_8223F728) {
+    loading_hold_hook::frame(ctx,base);   // v1050: the held loading screen's release (Online mode only; one latched branch otherwise)
+    online_l0_hook::tick(ctx,base);   // v994: E6 / L0 / E5 (online_l0_hook.inc; Story and the switch absent: one latched branch)
     recomp::wl::beforePedReset(base);
     __imp__sub_8223F728(ctx, base);
 }

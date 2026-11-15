@@ -2,6 +2,8 @@
 extern "C" __attribute__((weak)) std::atomic<bool> recomp_v248_baseline; // v248 (generic_renderer.cpp switch poll)
 extern "C" __attribute__((weak)) bool recomp_mw_domain_contended() noexcept; // main-wait (guest_cooperative_executor.cpp)
 #include "guest_import_registry.h"
+#include "stfs_content_registry.h" // v1506 stfs-1: installed-content rows read from STFS packages, beyond the catalog file
+#include "ntcreate_unknown_device.h" // v1520-ntcreate 0: an open on a device that cannot exist (DLC text packs, "(null):")
 #include "diag_timeline.h" // v195 DIAGNOSTIC: wait objects and signals on the timeline
 #include "physical_adjacent_cover.h" // v207
 #include "cs_range_query.h" // v217
@@ -42,6 +44,7 @@ inline bool yieldSkippedNow(std::uint32_t token) noexcept {
 extern "C" std::atomic<bool> recomp_v217_baseline;
 std::atomic<bool> recomp_v217_baseline{false};
 #include "recomp_app_dir.h" // data-paths: the app's files directory. imports-fast (agent F, imports_fast.h): the in-run switch (files/private-trace/diag-imports-fast, polled by the renderer).
+#include "online_local_glue.h" // online-local (Update 1, upd1-spoof/session-stubs): diag-online-local, Sandbox only; inert otherwise
 extern "C" std::atomic<bool> recomp_imports_fast; std::atomic<bool> recomp_imports_fast{false}; // (two lines joined: the next line is native_imports.h's, and every later line keeps its number)
 #include "native_imports.h" // native-imports (lane native-syscalls): the locked paths' hooks csSlow / csRetire / csRetireAll; definitions in native_imports.inc (last line)
 namespace {
@@ -150,7 +153,9 @@ std::array<unsigned long long,2> waitEpochCounters() noexcept { return {waitEpoc
 #include "guest_thread_priority.h"
 #include "native_display_information.h"
 #include "native_serialized_resource_batch.h"
-
+#include "rumble_exports.inc" // Update 1 P2 haptics: rumble.h + its two exports (XamInputSetState below)
+// v989 (E3, trainer_glue.inc): the Interaction Menu's Back gate on the pad snapshot of XamInputGetState (null = no filter).
+extern "C" std::atomic<void(*)(std::uint32_t,std::uint16_t*)> recomp_pad_filter_fn;
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -163,7 +168,7 @@ std::array<unsigned long long,2> waitEpochCounters() noexcept { return {waitEpoc
 #if defined(__ANDROID__)
 #include <android/log.h>
 #endif
-
+#include "my_music_registry.h" // Update 1 P6 My Music: the 70009 answer, the 7001A hold record, refused XMsg messages (diagnostics)
 // PARALLEL (multicore plan WP2, local-analysis/parallel-design/plan.md): only with
 // RECOMP_GUEST_THREADS > 0 (1 gil, 2 lanes). The default cooperative build keeps
 // today's code: every helper below collapses to the registry-wide member and to
@@ -207,6 +212,7 @@ std::mutex& GuestImportRegistry::registryMutex() const noexcept { return mutex_;
 } // namespace recomp::bootstrap
 #include "save_sandbox.h" // save-sandbox: diag-save-sandbox (filesRootFor: the root of the saves and the profile)
 #include "guest_local_profile.h" // v142: local signed-in profile
+#include "signin_spoof.h" // upd1-spoof: Sandbox-only online sign-in answers (signin_spoof_registry.inc)
 #include "guest_save_store.h" // v142: persistent saved-game content
 #include <random>
 #include <set>
@@ -3582,6 +3588,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
     // was already settled for this registry. Then the gate (a static mutex and a std::map lookup under R) is skipped.
     const bool importsFastSkipSaves = (importsFastHot & ::recomp::imports_fast::HotHandleImports) != 0 &&
             (!(nativeXamAddress_ != 0 && signedOutUsersBound_) || savesStateSettled(this));
+#include "online_local_registry.inc" // online-local: answers its imports first when ON (Sandbox + switch); one latched load otherwise
 #include "guest_saves_dispatch.inc" // v142: local profile + saved games (returns only for what it handles)
     if(nativeTileSceneInterruptScope_ && RECOMP_CURRENT_GUEST_TOKEN==nativeTileSceneInterruptScope_->worker) { // (v193)
         if(importName!="__imp__KeGetCurrentProcessType" || !validateNativeTileSceneInterruptScopeLocked())
@@ -3942,10 +3949,10 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
             call.returnValue=0;return handled(importName,"Actual Android input capabilities; no native force-feedback backend");
         }
         const auto* vibration=addressSpace_->translate(output);
-        // No FFB is advertised. A zero command is already satisfied; a nonzero
-        // command fails explicitly, never claims an unperformed motor action.
-        call.returnValue=(vibration[0]|vibration[1]|vibration[2]|vibration[3])?50:0;
-        return handled(importName,"Native force feedback is unsupported; zero output is quiescent");
+        // Update 1 P2: rumble.h. Unbound (no app consumer): today's answers, 0 for a zero command, 50 for any other;
+        // bound (recomp_rumble_bind_v1(1)): the command is stored for the app's haptics thread and answered 0.
+        call.returnValue=recomp_rumble::setState(vibration);
+        return handled(importName,"Force feedback through rumble.h (bound: performed by the app; unbound: zero output only)");
     }
     if (importName == "__imp__XamInputGetState") {
         if(nativeGamepadReader_) {
@@ -3959,6 +3966,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
             const auto connected=readGamepad(user,state);
             if(connected!=0 && connected!=1)return rejected(importName,"Native input snapshot failed");
             if(!connected) {call.returnValue=0x48F;return handled(importName,"Native controller is disconnected");}
+            if(auto* filter=recomp_pad_filter_fn.load(std::memory_order_acquire))filter(user,&state.buttons);   // v989 (E3): the imenu Back gate
             if(output) {
                 if(!validGuestDataBuffer(output,16,true,4))return memoryFault(importName,"Input state output is not writable guest storage");
                 const auto packet=recomp::input::encodeGamepadState(state);
@@ -4052,6 +4060,8 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
             return handled(importName, "Xbox raw partition is absent from the native namespace; no handle created");
         }
         const auto path = symbolicLinks_.resolve(lastFileCreateRequest_->path);
+        if (!path) {static std::atomic<unsigned> v1520n{0};if(v1520n.fetch_add(1,std::memory_order_relaxed)<64)__android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_NTCREATE refused len=%zu unknown_device=%d disposition=%u access=%08x path=%.*s",lastFileCreateRequest_->path.size(),int(recomp::bootstrap::ntcreate_v1520::unknownDevicePath(lastFileCreateRequest_->path)),unsigned(request.disposition),unsigned(request.access),static_cast<int>(std::min<std::size_t>(lastFileCreateRequest_->path.size(),300)),lastFileCreateRequest_->path.data());} // v1520-ntcreate 1
+        if (!path && recomp::bootstrap::ntcreate_v1520::unknownDevicePath(lastFileCreateRequest_->path) && (request.access & ~ReadOnlyAccess) == 0 && (request.access & 0x80000081U) != 0 && request.disposition == 1 && call.argument32(4) == 0 && (request.attributes == 0 || request.attributes == 0x80) && request.share <= 7 && (request.options & ~0x864U) == 0 && (request.options & 0x804U) != 0x804U && (request.options & 0x20) != 0) { lastFileCreateRequest_->lookup = 2; (void)writeU32(handle, recomp::bootstrap::ntcreate_v1520::InvalidHandle); (void)writeU32(iosb, recomp::bootstrap::ntcreate_v1520::StatusObjectPathNotFound); (void)writeU32(iosb + 4, recomp::bootstrap::ntcreate_v1520::FileDoesNotExist); call.returnValue = recomp::bootstrap::ntcreate_v1520::StatusObjectPathNotFound; return handled(importName, "Read-only open on a device that does not exist: OBJECT_PATH_NOT_FOUND (Xenia VFS OpenFile)"); } // v1520-ntcreate 2
         if (!path) { return rejected(importName, "File open path syntax is outside the supported subset"); }
         lastFileCreateRequest_->path=*path;
         if ((request.access & ~ReadOnlyAccess) != 0 || (request.access & 0x80000081U) == 0
@@ -4065,7 +4075,11 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
         const auto result = queryFileMetadata(*path);
         lastFileCreateRequest_->lookup = result.state == GuestFileQueryState::Found ? 1
                 : result.state == GuestFileQueryState::NotFound ? 2 : 3;
+        {static unsigned logged=0;const std::string& pth=*path;const auto colon=pth.find(':');std::string rl=colon==pth.npos?std::string{}:pth.substr(0,colon);for(char& ch:rl)ch=char(std::tolower(static_cast<unsigned char>(ch)));if((lastFileCreateRequest_->mountedContent || rl.rfind("dlc",0)==0 || rl.rfind("extra",0)==0) && logged<400){++logged;__android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_CONTENT open %s mounted=%d lookup=%u",pth.c_str(),lastFileCreateRequest_->mountedContent?1:0,unsigned(lastFileCreateRequest_->lookup));}}   // v1355-dlc-diag 7
+        {const std::string& p1523=*path;if(p1523.size()>3 && (p1523[0]|32)=='d' && (p1523[1]|32)=='l' && (p1523[2]|32)=='c'){static std::atomic<unsigned> n1523{0};__android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_DLC_OPEN #%u %s lookup=%u attributes=%08x options=%08x",n1523.fetch_add(1,std::memory_order_relaxed)+1,p1523.c_str(),unsigned(lastFileCreateRequest_->lookup),unsigned(result.state==GuestFileQueryState::Found?result.metadata.attributes:0),unsigned(request.options));}} // v1523-dlcfail 1: every dlc* open, uncapped (lookup 1 found, 2 absent, 3 unavailable)
         if (result.state == GuestFileQueryState::Found) {
+            if (result.metadata.attributes != 1) {static std::atomic<unsigned> v1521n{0};if(v1521n.fetch_add(1,std::memory_order_relaxed)<64)__android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_NTCREATE not-a-file attributes=%08x options=%08x access=%08x path=%.*s",unsigned(result.metadata.attributes),unsigned(request.options),unsigned(request.access),static_cast<int>(std::min<std::size_t>(path->size(),300)),path->data());} // v1521-ntcreate 3
+            if (result.metadata.attributes == 0x11 && (request.options & 0x40U) != 0) { (void)writeU32(handle, 0xFFFFFFFFU); (void)writeU32(iosb, 0xC00000BAU); (void)writeU32(iosb + 4, 0); call.returnValue = 0xC00000BAU; return handled(importName, "A non-directory open of a directory: FILE_IS_A_DIRECTORY (Xenia VFS OpenFile)"); } // v1521-ntcreate 4: FILE_NON_DIRECTORY_FILE (0x40) on a directory -> STATUS_FILE_IS_A_DIRECTORY, no handle (xboxkrnl_io.cc / virtual_file_system.cc)
             if (result.metadata.attributes != 1) { return rejected(importName, "Only regular read-only content opens are supported"); }
             auto source = openFileSource(*path);
             if (!source || source->size() != result.metadata.values[5]) {
@@ -4223,6 +4237,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
             call.returnValue = StatusInvalidHandle;
             return handled(importName, "Read handle is not an owned open file");
         }
+        if (!found->second.contentRoot.empty() && (found->second.contentRoot[0]|32)=='d' && found->second.contentRoot.size()>3 && (found->second.contentRoot[1]|32)=='l' && (found->second.contentRoot[2]|32)=='c') {static std::atomic<unsigned> n{0};const unsigned k=n.fetch_add(1,std::memory_order_relaxed)+1;std::uint32_t oh=0xFFFFFFFFu,ol=0xFFFFFFFFu;if(offsetPtr){(void)readU32(offsetPtr,oh);(void)readU32(offsetPtr+4,ol);}if(k<=800 || k%2000==0)__android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_CONTENT read #%u root=%s size=%llu off=%08x%08x len=%u",k,found->second.contentRoot.c_str(),static_cast<unsigned long long>(found->second.source?found->second.source->size():0),oh,ol,length);}   // v1357-dlc-read 1
 #if RECOMP_PARALLEL_REGISTRY
         // PARALLEL (WP2): the host read runs WITHOUT the registry mutex (open call).
         // Source and cursor are snapshotted under the lock, bytes are read unlocked,
@@ -4372,6 +4387,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
         if (queried.state == GuestFileQueryState::Unavailable) {
             return rejectAttributes("File attribute namespace is unavailable in the bound metadata snapshot",*normalized);
         }
+        if (queried.state != GuestFileQueryState::Found && normalized->size()>3 && ((*normalized)[0]|32)=='d' && ((*normalized)[1]|32)=='l' && ((*normalized)[2]|32)=='c') {static std::atomic<unsigned> n1523a{0};__android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_DLC_ATTR_MISSING #%u %s state=%u",n1523a.fetch_add(1,std::memory_order_relaxed)+1,normalized->c_str(),unsigned(queried.state));} // v1523-dlcfail 2: every dlc* attributes query that finds nothing, uncapped
         if (queried.state == GuestFileQueryState::NotFound) {
             call.returnValue = 0xC000000FU;
             return handled(importName, "File is absent from the complete bound metadata snapshot");
@@ -4401,18 +4417,18 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
         // state GTA's own XMPSetPlaybackController calls can reach (Game, or Restore -> Game) reads back as
         // controller 0 (Game), locked 0, which is also Xenia's initial state.
         if (nativeXamAddress_ == 0 || (call.argument32(3) != 0 && call.argument32(3) != 12)) {
-            return rejected(importName, "Only native music-player playback-controller queries are modeled");
+            recompMyMusicRefused("XMsgInProcessCall", call.argument32(0), call.argument32(1)); return rejected(importName, "Only native music-player playback-controller queries are modeled");
         }
         const auto buffer = call.argument32(2);
         std::uint32_t client = 0, controller = 0, locked = 0;
         if (!validGuestDataBuffer(buffer, 12, false) || !readU32(buffer, client) || !readU32(buffer + 4, controller)
                 || !readU32(buffer + 8, locked) || !validGuestDataBuffer(controller, 4, true) || !validGuestDataBuffer(locked, 4, true)
                 || hasActiveCriticalSectionInRange(controller, 4) || hasActiveCriticalSectionInRange(locked, 4)) {
-            return memoryFault(importName, "Playback-controller query/outputs are not bounded guest data");
+            recompMyMusicRefused("XMsgInProcessCall", call.argument32(0), call.argument32(1)); return memoryFault(importName, "Playback-controller query/outputs are not bounded guest data");
         }
         const auto overlaps = [](std::uint64_t a, std::uint64_t an, std::uint64_t b, std::uint64_t bn) { return a < b + bn && b < a + an; };
         if (client != 2 || overlaps(controller, 4, locked, 4) || overlaps(controller, 4, buffer, 12) || overlaps(locked, 4, buffer, 12)) {
-            return rejected(importName, "Playback-controller query requires the title client and separate outputs");
+            recompMyMusicRefused("XMsgInProcessCall", call.argument32(0), call.argument32(1)); return rejected(importName, "Playback-controller query requires the title client and separate outputs");
         }
         auto result = handled(importName, "Title is in background-music playback control (no dashboard music player)");
         (void)writeU32(controller, 0);
@@ -4421,14 +4437,14 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
         return result;
     }
     if (importName == "__imp__XMsgInProcessCall") {
-        // Native XAM's standalone music-player profile has no playlist or
-        // playback controller. Its status is idle, independently of game audio.
-        // Xenia xmp_app.cc: app FA/message 70009 takes {client, status_ptr};
-        // xmp_app.h defines idle as zero. Other messages remain unsupported.
+        // Native XAM's standalone music-player profile has no playlist or playback controller. Xenia xmp_app.cc: app FA/message
+        // 70009 takes {client, status_ptr}; xmp_app.h: 0 idle, 1 playing, 2 paused. The status is My Music's (Update 1 P6, my_music.h
+        // answerNow): the app's player state while its report is fresh and the game does not hold the music, else idle (the answer
+        // before My Music). The game mutes its music groups while it reads 1. Other messages remain unsupported.
         if (nativeXamAddress_ == 0 || call.argument32(0) != 0xFA
                 || call.argument32(1) != 0x00070009
                 || (call.argument32(3) != 0 && call.argument32(3) != 8)) {
-            return rejected(importName, "Only native idle music-player status is modeled");
+            recompMyMusicRefused("XMsgInProcessCall", call.argument32(0), call.argument32(1)); return rejected(importName, "Only native idle music-player status is modeled");
         }
         const auto buffer = call.argument32(2);
         std::uint32_t client = 0, output = 0;
@@ -4436,14 +4452,14 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
                 || !readU32(buffer, client) || !readU32(buffer + 4, output)
                 || !validGuestDataBuffer(output, 4, true)
                 || hasActiveCriticalSectionInRange(output, 4)) {
-            return memoryFault(importName, "Music-player request/output is not bounded guest data");
+            recompMyMusicRefused("XMsgInProcessCall", call.argument32(0), call.argument32(1)); return memoryFault(importName, "Music-player request/output is not bounded guest data");
         }
         if (client != 2 || (output < std::uint64_t{buffer} + 8
                 && buffer < std::uint64_t{output} + 4)) {
-            return rejected(importName, "Music-player status requires title client and separate output");
+            recompMyMusicRefused("XMsgInProcessCall", call.argument32(0), call.argument32(1)); return rejected(importName, "Music-player status requires title client and separate output");
         }
-        auto result = handled(importName, "Native standalone music player is idle; game audio unchanged");
-        (void)writeU32(output, 0);
+        const std::uint32_t myMusicState = recompMyMusicStatus(addressSpace_ != nullptr ? addressSpace_->base() : nullptr); auto result = handled(importName, recompMyMusicStatusText(myMusicState));
+        (void)writeU32(output, myMusicState); // (Update 1 P6 My Music: idle unless the app's player reports; my_music_registry.h)
         call.returnValue = 0; // S_OK.
         return result;
     }
@@ -4460,21 +4476,21 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
         // which repo headers include directly, and dispatch does not consult it.)
         if (nativeXamAddress_ == 0 || call.argument32(0) != 0xFA || call.argument32(1) != 0x0007001A
                 || call.argument32(2) != 0 || call.argument32(4) != 12 || call.argument32(5) != 0) {
-            return rejected(importName, "Only synchronous title music-player playback-controller requests are modeled");
+            recompMyMusicRefused("XMsgStartIORequestEx", call.argument32(0), call.argument32(1)); return rejected(importName, "Only synchronous title music-player playback-controller requests are modeled");
         }
         const auto buffer = call.argument32(3);
         std::uint32_t client = 0, request = 0, locked = 0;
         if (!validGuestDataBuffer(buffer, 12, false) || !readU32(buffer, client)
                 || !readU32(buffer + 4, request) || !readU32(buffer + 8, locked)) {
-            return memoryFault(importName, "Playback-controller request is not bounded guest data");
+            recompMyMusicRefused("XMsgStartIORequestEx", call.argument32(0), call.argument32(1)); return memoryFault(importName, "Playback-controller request is not bounded guest data");
         }
         if (client != 2 || (request != 0 && request != 4) || locked > 1 || (request == 4 && locked != 0)) {
-            return rejected(importName, "Playback-controller request is not a title Game/Restore request");
+            recompMyMusicRefused("XMsgStartIORequestEx", call.argument32(0), call.argument32(1)); return rejected(importName, "Playback-controller request is not a title Game/Restore request");
         }
         auto result = handled(importName, request == 0
                 ? "Title took background-music playback control; no dashboard music player plays"
                 : "Title restored background-music playback control; no dashboard music player plays");
-        call.returnValue = 0; // X_E_SUCCESS; no output, completion or last error.
+        recompMyMusicControl(request, locked); call.returnValue = 0; // X_E_SUCCESS; no output, completion or last error. (My Music: the hold record)
         return result;
     }
     if (importName == "__imp__XMsgStartIORequest") {
@@ -4484,7 +4500,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
         if (nativeXamAddress_ == 0 || call.argument32(0) != 0xFE
                 || call.argument32(1) != 0x00022005 || call.argument32(2) != 0
                 || call.argument32(4) != 8) {
-            return rejected(importName, "Only synchronous native XAM query 22005 unavailability is modeled");
+            recompMyMusicRefused("XMsgStartIORequest", call.argument32(0), call.argument32(1)); return rejected(importName, "Only synchronous native XAM query 22005 unavailability is modeled");
         }
         const auto buffer = call.argument32(3);
         std::uint32_t output = 0, overlapped = 0;
@@ -4492,11 +4508,11 @@ GuestImportDispatchResult GuestImportRegistry::dispatchUnderRegistryLock(
                 || !readU32(buffer, output) || !readU32(buffer + 4, overlapped)
                 || output == 0 || (output & 3U) != 0 || !contains(output, 4)
                 || overlapsProtectedThreadStorage(output, 4)) {
-            return memoryFault(importName, "Native XAM query buffer/output is not bounded external storage");
+            recompMyMusicRefused("XMsgStartIORequest", call.argument32(0), call.argument32(1)); return memoryFault(importName, "Native XAM query buffer/output is not bounded external storage");
         }
         if (overlapped != 0 || (output < static_cast<std::uint64_t>(buffer) + 8
                 && buffer < static_cast<std::uint64_t>(output) + 4)) {
-            return rejected(importName, "Native XAM query requires nonoverlapping synchronous output");
+            recompMyMusicRefused("XMsgStartIORequest", call.argument32(0), call.argument32(1)); return rejected(importName, "Native XAM query requires nonoverlapping synchronous output");
         }
         call.returnValue = 0x80004005U; // E_FAIL: service unavailable; no completion or output fabricated.
         return handled(importName, "Native XAM query 22005 unavailable; output and last error preserved");
@@ -5937,12 +5953,14 @@ GuestImportDispatchResult GuestImportRegistry::dispatchNtClose(GuestImportCall& 
 bool GuestImportRegistry::bindInstalledContent(const GuestContentCatalog& catalog, std::uint32_t title) {
     RECOMP_REGISTRY_LOCK(lock);
     if (addressSpace_ == nullptr || title == 0 || catalog.title() != title || installedContent_.title() != 0) { return false; }
+    clearExtraContentRows(this); // v1506 stfs-2: a newly bound catalog drops earlier STFS rows
     installedContent_ = catalog;
     return true;
 }
 
 bool GuestImportRegistry::bindContentPackage(std::uint32_t index, const GuestFileMetadataCatalog& metadata, const ContentFiles& files) {
     RECOMP_REGISTRY_LOCK(lock);
+    if (stfsContentRow(this, installedContent_, index)) { std::size_t all = 0; for (const auto& [unused, package] : contentPackages_) { (void)unused; all += package.files.size(); } if (addressSpace_ == nullptr || contentPackages_.count(index) || !stfsPackageAcceptable(metadata, files, all)) { return false; } contentPackages_.emplace(index, ContentPackage{metadata, files}); return true; } // v1506 stfs-3: an STFS row (lazy views of one open package): GuestFileMetadataCatalog bounds and <= 65536 files, not the extracted-file caps
     if (addressSpace_ == nullptr || index == 0 || index > installedContent_.records().size()
             || contentPackages_.count(index) || metadata.size() > 256
             || metadata.pathAt(1) != std::optional<std::string>{"content:\\"} || files.empty()) { return false; }
@@ -6048,6 +6066,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchRtlTimeFieldsToTime(Guest
 
 GuestImportDispatchResult GuestImportRegistry::dispatchContentDeviceData(GuestImportCall& call) {
     constexpr std::string_view Name{"__imp__XamContentGetDeviceData"};
+    const ContentRowsView installedContent_{contentRows(this, this->installedContent_), this->installedContent_.title()}; // v1506 stfs-4: device data over catalog rows, then STFS rows
     if (installedContent_.title() == 0 || contentPackages_.size() != installedContent_.records().size()) {
         return rejected(Name, "Content device requires every supplied package completely preopened");
     }
@@ -6104,6 +6123,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchContentMount(GuestImportC
     auto result = handled(name, close ? "Closed owned content namespace and its synchronous file handles"
                                      : "Opened an actual prebound read-only content package");
     if (close) {
+        __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_CONTENT close root=%s",root.c_str());   // v1355-dlc-diag 4
         if (call.argument32(1) != 0) { contentMountRejection_ = 64; return rejected(name, "Asynchronous content close is unsupported"); }
         if (contentMounts_.erase(root) == 0) { call.returnValue = 2; return result; }
         for (auto it = openFiles_.begin(); it != openFiles_.end();) {
@@ -6120,6 +6140,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchContentMount(GuestImportC
             | (call.argument32(5) != 0 ? 8U : 0U) | (call.argument32(6) != 0 ? 16U : 0U)
             | (call.arguments[7] != 0 ? 32U : 0U) | (overlapped != 0 ? 64U : 0U);
     if (contentMountRejection_ != 0) {
+        __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_CONTENT mount REJECTED root=%s mask=%u user=%08x flags=%08x",root.c_str(),contentMountRejection_,call.argument32(0),call.argument32(3));   // v1355-dlc-diag 3
         return rejected(name, "Only non-profile synchronous OPEN_EXISTING without license queries or writes is supported");
     }
     if (data == 0 || (data & 3U) != 0 || !contains(data, GuestContentCatalog::RecordBytes)) {
@@ -6135,7 +6156,9 @@ GuestImportDispatchResult GuestImportRegistry::dispatchContentMount(GuestImportC
             return memoryFault(name, "Content disposition must be bounded disjoint external storage");
         }
     }
+    const ContentRowsView installedContent_{contentRows(this, this->installedContent_), this->installedContent_.title()}; // v1506 stfs-5: mount matching over catalog rows, then STFS rows
     const auto* record = addressSpace_->translate(data);
+    {char fn[45]{};std::memcpy(fn,record+264,44);for(char& ch:fn)if(ch && (ch<32 || ch>126))ch='?';__android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_CONTENT mount root=%s file=%s dev=%08x type=%08x disposition=%08x",root.c_str(),fn,(unsigned(record[0])<<24)|(unsigned(record[1])<<16)|(unsigned(record[2])<<8)|record[3],(unsigned(record[4])<<24)|(unsigned(record[5])<<16)|(unsigned(record[6])<<8)|record[7],disposition);}   // v1355-dlc-diag 1
     std::uint32_t index = 0;
     for (const auto& candidate : installedContent_.records()) {
         ++index;
@@ -6155,6 +6178,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchContentMount(GuestImportC
     try { contentMounts_.emplace(root, index); }
     catch (const std::bad_alloc&) { call.returnValue = 8; return result; }
     if (disposition) { (void)writeU32(disposition, 2); }
+    __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_CONTENT mounted root=%s package=%u",root.c_str(),index);   // v1355-dlc-diag 2
     call.returnValue = 0;
     return result;
 }
@@ -6170,6 +6194,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchContentEnumeration(GuestI
         const auto user = call.argument32(0), device = call.argument32(1), type = call.argument32(2);
         const auto flags = call.argument32(3), capacity = call.argument32(4);
         const auto sizeOut = call.argument32(5), handleOut = call.argument32(6);
+        __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_CONTENT enumerator user=%08x device=%u type=%u flags=%08x capacity=%u",user,device,type,flags,capacity);   // v1355-dlc-diag 5
         if (user != 0xFE || device > 1 || type != 2 || flags != 0 || capacity == 0 || capacity > 64) {
             return rejected(name, "Only bounded title-context read-only marketplace enumeration is supported");
         }
@@ -6212,6 +6237,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchContentEnumeration(GuestI
         return memoryFault(name, "Enumerator buffer is unbounded, protected or aliases count output");
     }
     if (length < required) { call.returnValue = 122; (void)writeU32(itemsOut, 0); return result; }
+    const ContentRowsView installedContent_{contentRows(this, this->installedContent_), this->installedContent_.title()}; // v1506 stfs-6: enumeration over catalog rows, then STFS rows (stable order)
     const auto count = std::min<std::size_t>(enumerator.capacity, installedContent_.records().size() - enumerator.cursor);
     for (std::size_t i = 0; i < count; ++i) {
         const auto& record = installedContent_.records()[enumerator.cursor + i];
@@ -6219,6 +6245,7 @@ GuestImportDispatchResult GuestImportRegistry::dispatchContentEnumeration(GuestI
     }
     enumerator.cursor += count;
     (void)writeU32(itemsOut, static_cast<std::uint32_t>(count));
+    __android_log_print(ANDROID_LOG_INFO,"RecompRenderer","RENDER_CONTENT enumerate returned=%zu cursor=%u of %zu",count,unsigned(enumerator.cursor),installedContent_.records().size());   // v1355-dlc-diag 6
     call.returnValue = count == 0 ? 18 : 0; // ERROR_NO_MORE_FILES, not invented rows.
     return result;
 }
@@ -6970,10 +6997,12 @@ GuestImportDispatchResult GuestImportRegistry::dispatchRtlNtStatusToDosError(Gue
     case 0xC0000017U: error = 8; break;   // STATUS_NO_MEMORY -> ERROR_NOT_ENOUGH_MEMORY
     case 0xC0000022U: error = 5; break;   // STATUS_ACCESS_DENIED -> ERROR_ACCESS_DENIED
     case 0xC0000023U: error = 122; break; // STATUS_BUFFER_TOO_SMALL -> ERROR_INSUFFICIENT_BUFFER
+    case 0xC0000033U: error = 123; break; // STATUS_OBJECT_NAME_INVALID -> ERROR_INVALID_NAME (xboxkrnl_error.cc)
     case 0xC0000034U: error = 2; break;   // STATUS_OBJECT_NAME_NOT_FOUND -> ERROR_FILE_NOT_FOUND
     case 0xC0000035U: error = 183; break; // STATUS_OBJECT_NAME_COLLISION -> ERROR_ALREADY_EXISTS
     case 0xC000003AU: error = 3; break;   // STATUS_OBJECT_PATH_NOT_FOUND -> ERROR_PATH_NOT_FOUND
     case 0xC000007FU: error = 112; break; // STATUS_DISK_FULL -> ERROR_DISK_FULL
+    case 0xC00000BAU: error = 5; break; // STATUS_FILE_IS_A_DIRECTORY -> ERROR_ACCESS_DENIED (xboxkrnl_error.cc) // v1521-ntstatus
     default: return rejected(Name, "NTSTATUS is outside the verified conversion subset");
     }
     call.returnValue = error;

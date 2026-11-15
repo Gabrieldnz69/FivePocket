@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <android/log.h>
+#include <dlfcn.h> // v1525-trap 0
 #include <cstdio>
 #include <atomic>
 #include <condition_variable>
@@ -560,6 +561,7 @@ extern "C" const void* recomp_v362_guard_active_slot() noexcept {
 }
 
 extern "C" [[noreturn]] void recomp_guest_execution_trap() {
+    {Dl_info v1525i{};void* const v1525r=__builtin_return_address(0);const int v1525ok=dladdr(v1525r,&v1525i);__android_log_print(ANDROID_LOG_WARN,"RecompRenderer","RENDER_GUEST_TRAP host_off=%zx ok=%d (map with llvm-nm on the library: the enclosing sub_XXXXXXXX is the guest function)",v1525ok?static_cast<std::size_t>(static_cast<const char*>(v1525r)-static_cast<const char*>(v1525i.dli_fbase)):std::size_t{0},v1525ok);} // v1525-trap 1: where the guest trap fired (the stop report goes to stdout, not collected on the Fold)
     GuestExecutionGuard::stopForGuestTrap();
 }
 

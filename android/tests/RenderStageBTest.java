@@ -291,6 +291,8 @@ public final class RenderStageBTest {
                 for (SettingSpec spec : SettingsSchema.all()) {
                     for (int value = spec.min; value <= spec.max; value += spec.step) {
                         boolean notAMode = stageB[b] && spec.key.equals(RENDER) && (value == P50 || value == P125);
+                        // (Update 1: the preset row's Custom is shown when the rows hold it, never a step)
+                        if (spec.key.equals(SettingsSchema.PERFORMANCE_PRESET) && value == PerformancePresets.CUSTOM) notAMode = true;
                         if (notAMode) check(builds[b].valueSupported(spec.key, value), "build " + b + ": " + spec.format(value) + " is still supported");
                         same(builds[b].valueSupported(spec.key, value) && !notAMode, builds[b].offered(spec.key, value), "build " + b + ", " + spec.label + " " + spec.format(value) + ": offered");
                     }

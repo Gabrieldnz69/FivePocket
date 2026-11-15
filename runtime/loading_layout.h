@@ -7,7 +7,7 @@
 //    Resume screen) and ONLY the spinner, centred, 1.5 x v685's (v689, owner: "the spinning wheel doesn't need the shadow": no halo); no pill,
 //    no text (the "Loading" label stays in the image, unused). Not tappable. (v685: the Resume pill with the spinner and "Loading".)
 //  - the spinner is DRAWN HERE, not the game's: a white ring arc of SpinArcDeg with round caps whose opacity fades from the head to the
-//    tail, turning clockwise once per SpinPeriodMs - the look of GTA V's own busy spinner (the rotating ring beside "Loading" / "Saving"
+//    tail, turning counter-clockwise once per SpinPeriodMs - the look of GTA V's own busy spinner (the rotating ring beside "Loading" / "Saving"
 //    in the bottom right corner), reproduced; SpinFrames pre-rendered frames in the label image, texel for texel (KindLabel).
 #include "loading_label.h"
 #include "resume_layout.h"
@@ -19,16 +19,20 @@ namespace recomp::gpu::maptap {
 constexpr unsigned SpinPx=114,SpinFrames=32,SpinCols=8,SpinRows=SpinFrames/SpinCols; // (v687: 1.5 x v685's 76)
 constexpr float SpinRadius=45.0f,SpinThick=12.0f,SpinArcDeg=280.0f,SpinTailAlpha=0.08f,SpinGap=26.0f;
 constexpr std::int64_t SpinPeriodMs=1000;
+constexpr float SpinMirror=-1.0f; // -1: counter-clockwise on screen (the atlas is drawn texel for texel, unflipped, like the Resume label)
 // The spinner's coverage at pixel (x, y) of a SpinPx cell for frame f (0..SpinFrames-1): 0..255. The arc's head at angle
-// f * 360 / SpinFrames (0 = up, clockwise), the tail SpinArcDeg behind it; 4x4 supersampled.
+// f * 360 / SpinFrames (0 = up, counter-clockwise on screen), the tail SpinArcDeg behind it; 4x4 supersampled.
+// (android-qol 2026-11-08, owner: "the spinning wheel should be going in the other direction ... for the lower screen": v685-v1084
+// turned clockwise; the game's own busy spinner turns the other way. The whole cell is mirrored left-right (SpinMirror = -1), so the
+// head still leads and the tail still fades behind it. Thor lower screen only; the atlas and its draw are unchanged.)
 inline std::uint8_t spinCoverage(unsigned f,unsigned x,unsigned y) noexcept {
     constexpr float Pi=3.14159265358979f;
     const float c=float(SpinPx)*0.5f,head=float(f%SpinFrames)*360.0f/float(SpinFrames);
     float sum=0;
     for(unsigned sy=0;sy<4;++sy)for(unsigned sx=0;sx<4;++sx) {
-        const float px=float(x)+(float(sx)+0.5f)*0.25f-c,py=float(y)+(float(sy)+0.5f)*0.25f-c;
+        const float px=SpinMirror*(float(x)+(float(sx)+0.5f)*0.25f-c),py=float(y)+(float(sy)+0.5f)*0.25f-c;
         const float r=std::sqrt(px*px+py*py);
-        float a=std::atan2(px,-py)*180.0f/Pi;if(a<0)a+=360.0f;      // (0 = up, clockwise)
+        float a=std::atan2(px,-py)*180.0f/Pi;if(a<0)a+=360.0f;      // (0 = up; clockwise in the mirrored frame = counter-clockwise on screen)
         float behind=head-a;if(behind<0)behind+=360.0f;              // degrees behind the head
         float alpha=0;
         if(behind<=SpinArcDeg) {

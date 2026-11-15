@@ -587,6 +587,7 @@ final class MenuModel {
             return new Line(spec.format(value) + TEXT_UNSUPPORTED + spec.format(capabilities.effective(spec.key, value)), TONE_WARNING);
         }
         if (!capabilities.anyChoice(spec.key)) return new Line(commonReason(spec, false), TONE_DISABLED);
+        if (spec.key.equals(SettingsSchema.PERFORMANCE_PRESET)) return new Line(PerformancePresets.line(capabilities, value), TONE_NORMAL);
         if (unusedAtNative(spec)) return new Line(TEXT_NOT_AT_NATIVE, TONE_DISABLED);
         if (sharpnessUnused(spec)) return new Line(TEXT_ONLY_FSR1, TONE_DISABLED);
         if (stageB(spec)) return new Line(rowHelp(index)[0], capabilities.offered(spec.key, value) ? TONE_NORMAL : TONE_WARNING);

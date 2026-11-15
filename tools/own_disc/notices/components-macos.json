@@ -1,0 +1,430 @@
+{
+ "schema": "builder-notices/1",
+ "package": "the Mac builder package (builder, host-tools, the tools, the iOS build kits and the files the profiles name; Python and Xcode are the Mac's own)",
+ "components": [
+  {
+   "id": "this-project",
+   "name": "FivePocket builder (this project)",
+   "origin": "this download; its sources are in it",
+   "terms": "GNU General Public License, version 3 or (at your option) any later version",
+   "in_package": [
+    "builder",
+    "tools/*",
+    "android/*",
+    "local-analysis/*",
+    "host-tools/xex_image",
+    "host-tools/xmem-lzx"
+   ],
+   "note": "The tools, the launcher (builder, a shell script), the runtime sources and the parameter files are this project's own work unless a part below says otherwise. The complete sources of every program in this package are in the download.",
+   "texts": [
+    {
+     "root": "repo",
+     "path": "COPYING",
+     "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    }
+   ]
+  },
+  {
+   "id": "xenonrecomp",
+   "name": "XenonRecomp",
+   "origin": "https://github.com/sonicnext-dev/XenonRecomp.git (hedge-dev and contributors)",
+   "terms": "MIT",
+   "in_package": [
+    "host-tools/XenonRecomp",
+    "host-tools/xex_image",
+    "host-tools/ppc_context.h"
+   ],
+   "note": "Built with this project's patches; the patched source and the build script are in the download. As a whole XenonRecomp.exe comes under the GNU General Public License because of part 3.",
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "LICENSE.md",
+     "sha256": "bcb33ae2cbc6c0f2818712d806112e774e684fce01ce80573f92adf80b7487f4"
+    }
+   ]
+  },
+  {
+   "id": "binutils-ppc-disassembler",
+   "name": "PowerPC disassembler of GNU binutils",
+   "origin": "GNU binutils (Free Software Foundation), as carried in XenonRecomp's thirdparty/disasm",
+   "terms": "GNU General Public License, version 2 or any later version; taken here under version 3",
+   "in_package": [
+    "host-tools/XenonRecomp"
+   ],
+   "note": "The notice below is the head of ppc-dis.c. The text of version 3 of the licence is under part 1.",
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "thirdparty/disasm/ppc-dis.c",
+     "sha256": "352a4f17cdfe95fe284653c4ba343308557d4fb16b96bed3b136d6df54c16b58",
+     "lines": [
+      1,
+      20
+     ]
+    }
+   ]
+  },
+  {
+   "id": "libmspack-lzx",
+   "name": "libmspack (LZX decoder)",
+   "origin": "https://github.com/kyz/libmspack",
+   "terms": "GNU Lesser General Public License, version 2.1",
+   "in_package": [
+    "host-tools/XenonRecomp",
+    "host-tools/xmem-lzx"
+   ],
+   "note": "Only mspack/lzxd.c is compiled in. Its source and the build script are in the download, so the programs can be linked again with another version of it.",
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "thirdparty/libmspack/libmspack/COPYING.LIB",
+     "sha256": "a190dc9c8043755d90f8b0a75fa66b9e42d4af4c980bf5ddc633f0124db3cee7"
+    }
+   ]
+  },
+  {
+   "id": "tiny-aes-c",
+   "name": "tiny-AES-c",
+   "origin": "https://github.com/kokke/tiny-AES-c.git",
+   "terms": "The Unlicense (public domain)",
+   "in_package": [
+    "host-tools/XenonRecomp",
+    "host-tools/xex_image"
+   ],
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "thirdparty/tiny-AES-c/unlicense.txt",
+     "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+    }
+   ]
+  },
+  {
+   "id": "tinysha1",
+   "name": "TinySHA1",
+   "origin": "https://github.com/mohaps/TinySHA1 (as modified for Xenia)",
+   "terms": "permission notice in the file",
+   "in_package": [
+    "host-tools/XenonRecomp",
+    "host-tools/xex_image"
+   ],
+   "note": "The notice below is the head of TinySHA1.hpp.",
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "thirdparty/TinySHA1/TinySHA1.hpp",
+     "sha256": "54dc7225c1fa3ed9073f6fbec00aa0910ffee3a34347d65e10fac077b69f7a95",
+     "lines": [
+      1,
+      24
+     ]
+    }
+   ]
+  },
+  {
+   "id": "fmt",
+   "name": "{fmt}",
+   "origin": "https://github.com/fmtlib/fmt.git",
+   "terms": "MIT with an exception for binary forms",
+   "in_package": [
+    "host-tools/XenonRecomp",
+    "host-tools/xex_image",
+    "host-tools/xenos/*/XenosRecomp",
+    "host-tools/xenos/*/XenosShaderPreflight",
+    "host-tools/xenos/main/libfmt.11.dylib"
+   ],
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "thirdparty/fmt/LICENSE",
+     "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8"
+    }
+   ]
+  },
+  {
+   "id": "tomlplusplus",
+   "name": "toml++",
+   "origin": "https://github.com/marzer/tomlplusplus.git",
+   "terms": "MIT",
+   "in_package": [
+    "host-tools/XenonRecomp"
+   ],
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "thirdparty/tomlplusplus/LICENSE",
+     "sha256": "529bc3900a9571e49db285b0df432397e70b881cc3bf48de6667ae74ff4b06d8"
+    }
+   ]
+  },
+  {
+   "id": "xxhash",
+   "name": "xxHash",
+   "origin": "https://github.com/Cyan4973/xxHash.git",
+   "terms": "BSD 2-Clause",
+   "in_package": [
+    "host-tools/XenonRecomp",
+    "host-tools/xenos/*/XenosRecomp",
+    "host-tools/xenos/*/XenosShaderPreflight"
+   ],
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "thirdparty/xxHash/LICENSE",
+     "sha256": "6ffedbc0f7878612d2b23589f1ff2ab15633e1df7963a5d9fc750ec5500c7e7a"
+    }
+   ]
+  },
+  {
+   "id": "simde",
+   "name": "SIMD Everywhere (SIMDe)",
+   "origin": "https://github.com/simd-everywhere/simde-no-tests.git",
+   "terms": "MIT",
+   "in_package": [
+    "tools/XenonRecomp/thirdparty/simde/*"
+   ],
+   "note": "Headers the game library is compiled with.",
+   "texts": [
+    {
+     "root": "xenonrecomp",
+     "path": "thirdparty/simde/COPYING",
+     "sha256": "75ce0a8c5a7bff42fbd6f8f3b469b518132132c4f4948fb8d02b1ccb5d0df9d8"
+    }
+   ]
+  },
+  {
+   "id": "xenosrecomp",
+   "name": "XenosRecomp",
+   "origin": "https://github.com/sonicnext-dev/XenosRecomp.git (hedge-dev and contributors)",
+   "terms": "MIT",
+   "in_package": [
+    "host-tools/xenos/*/XenosRecomp",
+    "host-tools/xenos/*/XenosShaderPreflight",
+    "host-tools/xenos/*/shader_common.h"
+   ],
+   "note": "Built with this project's changes; the changed source and the build script are in the download.",
+   "texts": [
+    {
+     "root": "xenosrecomp",
+     "path": "LICENSE.md",
+     "sha256": "bcb33ae2cbc6c0f2818712d806112e774e684fce01ce80573f92adf80b7487f4"
+    }
+   ]
+  },
+  {
+   "id": "zstd",
+   "name": "Zstandard",
+   "origin": "https://github.com/facebook/zstd.git",
+   "terms": "BSD 3-Clause (offered under BSD or GPL version 2; the BSD terms are taken)",
+   "in_package": [
+    "host-tools/xenos/*/XenosRecomp",
+    "host-tools/xenos/*/XenosShaderPreflight"
+   ],
+   "texts": [
+    {
+     "root": "xenosrecomp",
+     "path": "thirdparty/zstd/LICENSE",
+     "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+    }
+   ]
+  },
+  {
+   "id": "smol-v",
+   "name": "SMOL-V",
+   "origin": "https://github.com/aras-p/smol-v",
+   "terms": "public domain or MIT, as its file says",
+   "in_package": [
+    "host-tools/xenos/*/XenosRecomp",
+    "host-tools/xenos/*/XenosShaderPreflight"
+   ],
+   "texts": [
+    {
+     "root": "xenosrecomp",
+     "path": "thirdparty/smol-v/license.txt",
+     "sha256": "9cea538cc1ee6680f4d13e212bfef5b581cd5d873cbedf6dc07699dbe7e69651"
+    }
+   ]
+  },
+  {
+   "id": "ffmpeg",
+   "name": "FFmpeg (source of libavcodec and libavutil for the sound decoder)",
+   "origin": "https://github.com/xenia-project/FFmpeg at 15ece0882e8d",
+   "terms": "GNU Lesser General Public License, version 2.1 or later",
+   "in_package": [
+    "local-analysis/builder/xma-source/*",
+    "tools/own_disc/xma_decoder/*"
+   ],
+   "note": "Carried as source and compiled by the player's own run with the command list beside it.",
+   "texts": [
+    {
+     "root": "ffmpeg-tar",
+     "member": "COPYING.LGPLv2.1",
+     "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+    },
+    {
+     "root": "ffmpeg-tar",
+     "member": "LICENSE.md",
+     "sha256": "cb48bf09a11f5fb576cddb0431c8f5ed0a60157a9ec942adffc13907cbe083f2"
+    }
+   ]
+  },
+  {
+   "id": "game-library-parts",
+   "name": "Parts inside the game library the builder makes (AMD FSR 1, Qualcomm GSR 1, files adapted from Xenia and ReXGlue, FFmpeg, SIMDe, the Android NDK's runtime)",
+   "origin": "named part by part in the text below",
+   "terms": "MIT, BSD 3-Clause, LGPL 2.1 or later, Apache 2.0 with LLVM exceptions, as the text says",
+   "in_package": [
+    "android/*",
+    "tools/host_guest_trace/*",
+    "tools/vulkan_probe/*",
+    "local-analysis/builder/portable/supplied/*"
+   ],
+   "note": "The notices of the game library (FivePocket wording); the runtime sources in this package carry these parts.",
+   "texts": [
+    {
+     "root": "repo",
+     "path": "tools/own_disc/notices/game-library-parts.md",
+     "sha256": "9a61f5fec8c65ac828862d962b5c49c2c4845aff3b0c5f971f68aaed49cc95b6"
+    }
+   ]
+  },
+  {
+   "id": "directx-shader-compiler",
+   "name": "DirectX Shader Compiler (built from its source for macOS)",
+   "origin": "https://github.com/microsoft/DirectXShaderCompiler",
+   "terms": "University of Illinois/NCSA Open Source License (LLVM release licence) and the third-party terms in ThirdPartyNotices.txt",
+   "in_package": [
+    "host-tools/dxc/*"
+   ],
+   "note": "Microsoft publishes no macOS release; this package carries a build of the source for macOS.",
+   "texts": [
+    {
+     "root": "dxc-src",
+     "path": "LICENSE.TXT",
+     "sha256": "27a49e35d1da96eba18fba54bc882667ff0ff8c0254f16f2b6e165d605ba7df8"
+    },
+    {
+     "root": "dxc-src",
+     "path": "ThirdPartyNotices.txt",
+     "sha256": "19512a5d0a015ef16d167272c164da49a604614a786206212a80ad486ed0be6d"
+    }
+   ]
+  },
+  {
+   "id": "moltenvk",
+   "name": "MoltenVK 1.4.2 (Vulkan on Metal; static library of the iOS app)",
+   "origin": "https://github.com/KhronosGroup/MoltenVK",
+   "terms": "Apache License 2.0",
+   "in_package": [
+    "local-analysis/.builder/ios/*"
+   ],
+   "note": "libMoltenVK.a and its headers are in the iOS build kit; the app the player builds links them.",
+   "texts": [
+    {
+     "root": "moltenvk",
+     "path": "LICENSE",
+     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+   ]
+  },
+  {
+   "id": "cereal",
+   "name": "cereal (inside libMoltenVK.a, MoltenVK 1.4.2; revision a56bad8bbb770ee266e930c95d37fff2a5be7fea)",
+   "origin": "https://github.com/USCiLab/cereal",
+   "terms": "BSD 3-Clause License",
+   "in_package": [
+    "local-analysis/.builder/ios/*"
+   ],
+   "note": "MoltenVK 1.4.2 links cereal statically into libMoltenVK.a (the iOS build kit); the text below is the project's own at the revision MoltenVK v1.4.2 pins (ExternalRevisions/cereal_repo_revision).",
+   "texts": [
+    {
+     "root": "moltenvk-deps",
+     "path": "cereal/LICENSE",
+     "sha256": "58604a126af6a671ea390ee3d5b3e42228aa59b2858fb7af1d5b20b31739ccbb"
+    }
+   ]
+  },
+  {
+   "id": "spirv-cross",
+   "name": "SPIRV-Cross (inside libMoltenVK.a, MoltenVK 1.4.2; revision 6c09849fe88c48eaed08413aa022aaa136a3a057)",
+   "origin": "https://github.com/KhronosGroup/SPIRV-Cross",
+   "terms": "Apache License 2.0",
+   "in_package": [
+    "local-analysis/.builder/ios/*"
+   ],
+   "note": "MoltenVK 1.4.2 links SPIRV-Cross statically into libMoltenVK.a (the iOS build kit); the text below is the project's own at the revision MoltenVK v1.4.2 pins (ExternalRevisions/SPIRV-Cross_repo_revision).",
+   "texts": [
+    {
+     "root": "moltenvk-deps",
+     "path": "SPIRV-Cross/LICENSE",
+     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+   ]
+  },
+  {
+   "id": "spirv-tools",
+   "name": "SPIRV-Tools (inside libMoltenVK.a, MoltenVK 1.4.2; revision 0d6fd73ca73830ccab5fa1f00ed5ed40124e2c55)",
+   "origin": "https://github.com/KhronosGroup/SPIRV-Tools",
+   "terms": "Apache License 2.0",
+   "in_package": [
+    "local-analysis/.builder/ios/*"
+   ],
+   "note": "MoltenVK 1.4.2 links SPIRV-Tools statically into libMoltenVK.a (the iOS build kit); the text below is the project's own at the revision MoltenVK v1.4.2 pins (ExternalRevisions/SPIRV-Tools_repo_revision).",
+   "texts": [
+    {
+     "root": "moltenvk-deps",
+     "path": "SPIRV-Tools/LICENSE",
+     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+   ]
+  },
+  {
+   "id": "vulkan-headers",
+   "name": "Vulkan headers (Khronos Group)",
+   "origin": "https://github.com/KhronosGroup/Vulkan-Headers, as carried by MoltenVK",
+   "terms": "Apache License 2.0 or MIT",
+   "in_package": [
+    "local-analysis/.builder/ios/*"
+   ],
+   "note": "The notice below is the head of vulkan_core.h.",
+   "texts": [
+    {
+     "root": "moltenvk",
+     "path": "MoltenVK/include/vulkan/vulkan_core.h",
+     "sha256": "a7ac0d7e35e77f642c175af5d36729cfdae2d626d2aaa9145c030a42bd44edc6",
+     "lines": [
+      1,
+      12
+     ]
+    }
+   ]
+  },
+  {
+   "id": "nunito-sans",
+   "name": "Nunito Sans (the menus' font of the iOS app)",
+   "origin": "https://github.com/googlefonts/NunitoSans",
+   "terms": "SIL Open Font License 1.1",
+   "in_package": [
+    "local-analysis/builder/ios/*",
+    "local-analysis/.builder/ios/*"
+   ],
+   "texts": [
+    {
+     "root": "appfiles",
+     "path": "NunitoSans-OFL.txt",
+     "sha256": "efbb0c9e864cef973982d9a17567e6be5c3d1759695574586f3f18c7ecca064b"
+    }
+   ]
+  },
+  {
+   "id": "android-ndk",
+   "name": "Android NDK r27c",
+   "origin": "https://developer.android.com/ndk",
+   "terms": "Google's terms for the NDK",
+   "in_package": [
+    "(outside the package: the folder the fetch step unpacks)"
+   ],
+   "fetched": "the builder's fetch step takes the archive from Google after the player accepts its terms"
+  }
+ ]
+}
