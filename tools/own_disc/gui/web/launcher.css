@@ -58,6 +58,9 @@ a { cursor: pointer; }
 
 /* ---- the home page: the logo's place 335..560 x 165..365, the button 320..578 x 349..415 ---- */
 .page { position: absolute; left: var(--side-w); top: 0; right: 0; bottom: 0; }
+/* the header (tabs, avatar, window buttons) stays above the pages, which start at the top edge, and below the dialogs */
+#nav, #avatar, #chrome { z-index: 2; }
+#veil, .dialog { z-index: 3; }
 /* the FivePocket lockup fills the box the launcher's game logo fills (335..560 x 165..365), at its weight */
 #wordmark { position: absolute; left: 70px; top: 158px; overflow: visible; }
 /* a logo file of the player's: over the button's width, ending just above it, kept in proportion */
@@ -110,7 +113,7 @@ body:not(.tab-build) #side-more { display: none; }
 body.tab-build #section-list, body.tab-build #side-version { display: none; }
 body:not(.tab-build) #side { width: 316px; background: #1e1f22; }
 body:not(.tab-build) #side-mark { left: 40px; top: 50px; width: 45px; height: 42px; }                 /* tile 40..85 x 50..92 */
-#side-version { position: absolute; left: 95px; top: 52px; font: 12px/15px var(--sans); color: #a8a8a8; white-space: pre; }
+#side-version { position: absolute; left: 95px; top: 52px; right: 16px; font: 12px/15px var(--sans); color: #a8a8a8; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 #section-list { position: absolute; left: 0; right: 0; top: 175px; }
 #section-head { margin: 0 0 0 45px; font: bold 16px/1 var(--sans); color: #fff; }                   /* cap ~177 */
 #sections { margin-top: 32px; }

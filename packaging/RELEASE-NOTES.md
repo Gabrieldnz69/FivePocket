@@ -52,6 +52,7 @@ version".
   changes are saved when you leave the shop; the online character keeps the weapons and ammo the game saved; connecting or
   disconnecting headphones no longer stops the game (tested with a simulated route change); after an error stop the app
   shows its stop message instead of crashing.
+- Builder window: SETTINGS and the licence checkbox can be clicked again (the tabs were covered by the home page).
 
 ## Known issues
 

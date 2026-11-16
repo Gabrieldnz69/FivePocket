@@ -19,6 +19,7 @@ import http.server
 import json
 import mimetypes
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -610,9 +611,18 @@ class AppState:
         gb = lambda n: f'{n / 1e9:.2f} GB'      # noqa: E731  the launcher's own unit (GB REQUIRED / GB AVAILABLE)
         return {'required': need, 'available': free, 'required_text': gb(need), 'available_text': gb(free), 'enough': free >= need}
 
+    HOST_NAMES = {'win32-x86_64': 'Windows x64', 'win32-arm64': 'Windows on ARM', 'darwin-arm64': 'macOS (Apple silicon)',
+                  'linux-x86_64': 'Linux x64'}
+
     def version_lines(self):
-        roots = sorted({e.root.name for e in self.editions if e.root and e.available})
-        return ['FivePocket Builder'] + (roots[:2] if roots else ['no builder package found']) + [core.B.host_id()]
+        """the sidebar's lines beside the mark: the builder and its version, the edition(s) it makes, this computer; short
+        enough for the sidebar (the package folder names are not shown: they ran past it)"""
+        ready = [e for e in self.editions if e.root and e.available]
+        versions = sorted({m.group(1) for e in ready for m in [re.search(r'-(\d+\.\d+\.\d+)', e.root.name)] if m})
+        names = list(dict.fromkeys(short(e.label) for e in ready))
+        host = core.B.host_id()
+        return ([' '.join(['FivePocket Builder'] + versions[-1:])] + (names[:2] if names else ['no builder package found'])
+                + [self.HOST_NAMES.get(host, host)])
 
 
 # ------------------------------------------------------------------------------------------------------- server
