@@ -23,6 +23,8 @@ version".
 - **Performance presets** (iOS): Battery (30 fps cap) and Max (60 fps cap).
 - **Mods** (iOS): a warning when the game stopped last time with mods on, Start Once Without Mods, and adding a mod as a
   folder or a zip file from the device.
+- **Builder window** (Windows): double-click "FivePocket Builder.exe" to pick your discs and press BUILD; it runs the
+  same steps as builder.exe and makes the same files.
 - **Interaction Menu button** (FivePocket, touch controls): in the online world, a button in the top row of the touch
   controls opens the game's Interaction Menu with one tap. Checked on the Fold4. (iOS gets it in the next update.)
 

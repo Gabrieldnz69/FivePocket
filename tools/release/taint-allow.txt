@@ -361,3 +361,6 @@ file=a94c9078ef04967c985050cb9729e6979a8e43658b77e48d6c7ed4abd2039e64 path=pytho
 file=560cd0ab1ec81b8b2197b119e198453a9c23d2f9e846f15c79a26bf5d75b68c4 path=python/vcruntime140.dll byte-identical to python-3.12.10-embed-arm64.zip 3065efc3d382d1cda66757ac71ade11904fa6e350f5a97eb74811acd71ba5532 (python.org)
 file=47b622f5d31d62c5609d2b439ceab507ab3dda8f212969f8a5c968a04f3c3ec5 path=python/vcruntime140_1.dll byte-identical to python-3.12.10-embed-arm64.zip 3065efc3d382d1cda66757ac71ade11904fa6e350f5a97eb74811acd71ba5532 (python.org)
 file=2fefbac8f9f4536c921123e544f3d9e1cb9596ce54327938fbe09ddee3758642 path=python/winsound.pyd byte-identical to python-3.12.10-embed-arm64.zip 3065efc3d382d1cda66757ac71ade11904fa6e350f5a97eb74811acd71ba5532 (python.org)
+# 1.1.5 builder window (2026-11-16): generic runs in the window's own files.
+4d3ce18746f4091c027e717db076179202ed31789aa3111178ca89a9a50cf41f the standard sRGB ICC profile's colorant (XYZ) tags embedded in a WebP logo image (60 bytes)
+83173b8204cf5fc8529405b82f47a9641ff2bfc56fae733a918536eff43ee540 the DOS stub every Windows program's PE header carries ('This program cannot be run in DOS mode'), here in FivePocket Builder.exe (56 bytes)

@@ -20,10 +20,13 @@ STEPS
 1. Unpack this folder, then move it to C:\FivePocket, so that builder.exe is C:\FivePocket\builder\builder.exe
    (Windows cannot build in deeper folders, such as Downloads). Windows SmartScreen may warn about an unknown
    publisher: choose "More info", "Run anyway".
-2. Easiest: open the builder folder and double-click builder.exe (or drop a disc ISO onto it). When it asks for a
+2. Easiest: open the builder folder and double-click "FivePocket Builder.exe". In its window, pick your Disc 2 (Play)
+   and Disc 1 (Install) images, accept the compilers' terms under SETTINGS the first time, and press BUILD. RESULTS
+   shows your package and its seal. The window runs the same steps as builder.exe and makes the same files.
+   Or double-click builder.exe (or drop a disc ISO onto it) for the text version. When it asks for a
    disc, drag that .iso file onto its window (or type its full path) and press Enter. It shows the compilers' terms
    before fetching them, then checks, builds and verifies, and says where your package is.
-   Start only builder.exe: the .cmd and .bat files under builder\sources\ are other projects' build scripts, kept
+   Start only "FivePocket Builder.exe" or builder.exe: the .cmd and .bat files under builder\sources\ are other projects' build scripts, kept
    as source code. Don't run them.
 3. Or use the command line. Don't double-click for these: open a Command Prompt in the builder folder (click the
    folder's address bar, type cmd, press Enter), then run:

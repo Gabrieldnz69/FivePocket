@@ -1,0 +1,213 @@
+/* FivePocket Builder: the launcher layout, 1:1 on the maintainer's 1288 x 600 screenshot (local-analysis/gui-builder/ref,
+   measured by ref/measure.py). Every number below is a measured pixel of that screenshot unless it says otherwise.
+   Cap-height arithmetic for Arial: a block with line-height 1 puts the cap top at top + 0.13 x font-size. */
+
+:root {
+  --side-w: 265px;
+  --item-grey: #878787;
+  --rule: #141414;
+  --nav-off: rgba(0, 0, 0, .6);        /* STORE's strokes: #5e444b on #e7c5ce = black at 60 % */
+  --sans: Arial, "Helvetica Neue", Helvetica, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: var(--sans);
+             -webkit-user-select: none; user-select: none; cursor: default; }
+a { cursor: pointer; }
+[hidden] { display: none !important; }
+
+/* ---- backdrop: the main area right of the sidebar, a photo covering it ---- */
+#backdrop { position: absolute; left: var(--side-w); top: 0; right: 0; bottom: 0; overflow: hidden; background: #b7a3c8; }
+/* the photo, toned toward the launcher's soft painted sky: less contrast and colour, a little softer */
+#backdrop::before { content: ""; position: absolute; inset: -8px; background: var(--bd) center 38% / cover no-repeat;
+                    filter: saturate(.78) contrast(.8) brightness(1.06) blur(.7px); }
+/* and a light lavender wash over it, as the painting's palette */
+#backdrop::after { content: ""; position: absolute; inset: 0; background: linear-gradient(rgba(196, 170, 205, .34), rgba(150, 128, 170, .22) 60%, rgba(120, 96, 120, .18)); }
+
+/* ---- sidebar: black 0..264 ---- */
+#side { position: absolute; left: 0; top: 0; bottom: 0; width: var(--side-w); background: #000; }
+#side-mark { position: absolute; left: 24px; top: 41px; width: 38px; height: 37px; object-fit: contain; }   /* tile 24..61 x 42..76 */
+.side-head { position: absolute; left: 28px; margin: 0; font: bold 14px/1 var(--sans); color: #fff; }   /* cap 153..162 */
+#head-discs { top: 151px; }
+.item { position: absolute; left: 0; width: var(--side-w); height: 44px; display: flex; align-items: center; }
+.item .icon { position: absolute; left: 27px; width: 30px; height: 30px; display: grid; place-items: center; }
+.item .text { position: absolute; left: 76px; right: 12px; font: 11px/13px var(--sans); color: var(--item-grey); }
+.item .text b { font-weight: normal; display: block; }
+.item.on .text b, .item:hover .text b { color: #fff; }
+.item .icon svg { display: block; }
+#side-rule { position: absolute; left: 6px; width: 243px; bottom: 122px; height: 2px; background: var(--rule); }   /* y 476..477 of 600 */
+#side-more { position: absolute; left: 119px; bottom: 102px; color: #8d8d8d; }                                       /* 119..132 x 490..497 */
+#side-more.dim { color: #2a2a2a; }
+#side-links { position: absolute; left: 27px; bottom: 27px; height: 26px; display: flex; gap: 18px; align-items: center; } /* the panel button's place: 27..56 x 547..572 */
+#side-links .link { color: #8f8f8f; display: block; line-height: 0; }
+#side-links .link:hover { color: #fff; }
+#side-hint { position: absolute; left: 28px; bottom: 9px; font: 11px/1 var(--sans); color: #5c5c5c; }
+
+/* ---- top right: page names (cap 59..70, 16 px; GAMES 777..840 bold black; SETTINGS ends at 1174; gaps 50) ---- */
+#nav { position: absolute; right: 114px; top: 57px; display: flex; gap: 50px; font: 16px/1 var(--sans); letter-spacing: 1.6px; }
+#nav a { color: var(--nav-off); text-decoration: none; }
+#nav a.on { color: #000; font-weight: bold; }
+#nav a:hover { color: #000; }
+#avatar { position: absolute; left: 1221px; top: 47px; width: 36px; height: 36px; border-radius: 50%; background: #0b0d0c;
+          box-shadow: 0 0 0 2px #fbe9e6; display: grid; place-items: center; }                               /* 1222..1256 x 48..81 */
+#avatar img { width: 20px; height: 22px; }
+#chrome { position: absolute; right: 0; top: 0; height: 34px; display: flex; }
+#chrome a { width: 40px; height: 34px; display: grid; place-items: center; color: #111; }
+#chrome a:hover { background: rgba(0, 0, 0, .12); }
+#chrome a[data-chrome="close"]:hover { background: #e81123; color: #fff; }
+
+/* ---- the home page: the logo's place 335..560 x 165..365, the button 320..578 x 349..415 ---- */
+.page { position: absolute; left: var(--side-w); top: 0; right: 0; bottom: 0; }
+/* the FivePocket lockup fills the box the launcher's game logo fills (335..560 x 165..365), at its weight */
+#wordmark { position: absolute; left: 70px; top: 158px; overflow: visible; }
+/* a logo file of the player's: over the button's width, ending just above it, kept in proportion */
+#logo-file { position: absolute; left: 55px; top: 128px; width: 258px; height: 216px; object-fit: contain; object-position: center bottom; }
+/* the launcher's light button, from its pixels (320..578 x 349..415 on the 1288 x 600 capture), outside in:
+   a 2 px light rim (#fcfeff top, #e5e4ed / #eeefee sides, #c9cad0 bottom); a 2 px inner border (top #999999, right
+   #878787, left #c8c8c8 then a dark #535255 line, bottom a dark #494949 line then #b2b2b2); the face running #ffffff
+   to #cbcbcb; a 6 px shadow right and below; the label 19 px bold, cap 377..390, PLAY's letter spacing */
+#primary { position: absolute; left: 55px; top: 349px; width: 258px; height: 66px; padding: 0; cursor: pointer;
+           border: 2px solid; border-color: #fcfeff #eeefee #c9cad0 #e5e4ed; border-radius: 3px;
+           background: linear-gradient(#ffffff, #cbcbcb) padding-box;
+           box-shadow: 4px 5px 1.5px rgba(0, 0, 0, .55); }
+#primary::before { content: ""; position: absolute; inset: 0; pointer-events: none; border-style: solid;
+                   border-width: 2px 2px 1px 1px; border-color: #999999 #878787 #494949 #c8c8c8;
+                   box-shadow: inset 1px 0 0 #535255, inset 0 -1px 0 #b2b2b2; }
+#primary-label { position: relative; font: bold 19px/1 var(--sans); letter-spacing: 2.2px; color: #000; padding-left: 2.2px;
+                 -webkit-text-stroke: .7px #000; }          /* the capture's strokes are about 4 px: heavier than Arial Bold */
+#primary:hover { background: linear-gradient(#ffffff, #d6d6d6) padding-box; }
+#primary:active { transform: translate(1px, 1px); box-shadow: 3px 4px 1.5px rgba(0, 0, 0, .55); }
+#primary:disabled { cursor: default; filter: grayscale(1) brightness(.78); }
+/* the player's own button picture: its rim placed where the launcher's button is, its shadow outside; no drawn skin */
+#primary.art { border: 0; background: none; box-shadow: none; overflow: visible; }
+#primary.art::before { display: none; }
+#primary.art:hover { background: none; filter: brightness(1.03); }
+#primary.art:active { box-shadow: none; }
+#primary.art:disabled { filter: none; opacity: .72; }     /* not ready: the player's picture as it is, a little faded */
+#primary-art { position: absolute; pointer-events: none; max-width: none; }
+#primary.art #primary-label { font: 900 19px/1 "Arial Black", Arial, sans-serif; -webkit-text-stroke: 0; letter-spacing: 1.5px; }
+#primary-note { position: absolute; left: 57px; top: 430px; width: 520px; margin: 0; font: bold 12px/16px var(--sans); color: #fff;
+                text-shadow: 0 1px 2px rgba(0, 0, 0, .85); }
+#primary-note.warn { color: #fff; }
+
+/* ---- detail of an open sidebar item: in the place and black of the launcher's card (635..1068 x 159..429) ---- */
+#detail { position: absolute; left: 635px; top: 159px; width: 434px; min-height: 271px; max-height: 420px; overflow: auto;
+          background: #000; color: #fff; padding: 24px 26px 22px; box-shadow: 6px 6px 0 rgba(0, 0, 0, .31); }
+#detail h4 { margin: 0 0 10px; font: 17px/22px var(--sans); color: #fff; }
+#detail .desc { margin-top: 6px; font: 14px/18px var(--sans); color: #a0a0a0; overflow-wrap: anywhere; }
+#detail .desc.ok { color: #fff; } #detail .desc.bad { color: #ff8a80; } #detail .desc.warn { color: #fbb017; }
+#detail .mono { margin-top: 6px; font: 12px/17px Consolas, Menlo, monospace; color: #d6d6d6; user-select: text; overflow-wrap: anywhere; }
+#detail .close { position: absolute; right: 16px; top: 16px; color: #a5a5a5; cursor: pointer; line-height: 0; }
+#detail .close:hover { color: #fff; }
+.detail-actions { display: flex; gap: 12px; margin-top: 20px; }
+.pill.small { height: 38px; min-width: 0; padding: 0 20px; font-size: 12px; border-radius: 19px; }
+
+/* ==== the other pages: the launcher's settings page, 1:1 on the maintainer's 1280 x 893 capture ==================== */
+/* main #141518, the left column #1e1f22 0..316, rows 396..1196, separators #2b2c2f, accent #fbb017 (the launcher's) */
+body:not(.tab-build) { background: #141518; }
+body:not(.tab-build) #backdrop, body:not(.tab-build) #home-lists, body:not(.tab-build) #side-rule,
+body:not(.tab-build) #side-more { display: none; }
+body.tab-build #section-list, body.tab-build #side-version { display: none; }
+body:not(.tab-build) #side { width: 316px; background: #1e1f22; }
+body:not(.tab-build) #side-mark { left: 40px; top: 50px; width: 45px; height: 42px; }                 /* tile 40..85 x 50..92 */
+#side-version { position: absolute; left: 95px; top: 52px; font: 12px/15px var(--sans); color: #a8a8a8; white-space: pre; }
+#section-list { position: absolute; left: 0; right: 0; top: 175px; }
+#section-head { margin: 0 0 0 45px; font: bold 16px/1 var(--sans); color: #fff; }                   /* cap ~177 */
+#sections { margin-top: 32px; }
+#sections a { display: block; height: 34px; line-height: 34px; padding-left: 45px; font: 13px/34px var(--sans); color: #a7a7a7;
+              position: relative; text-decoration: none; }                                          /* General centred at 232, pitch 34 */
+#sections a:hover { color: #fff; }
+#sections a.on { color: #fff; }
+#sections a.on::before { content: ""; position: absolute; left: 0; top: 0; width: 3px; height: 34px; background: #fbb017; }
+#sections a .tag { float: right; margin-right: 22px; font-size: 11px; color: #7d7d7d; }
+#sections a.on .tag, #sections a:hover .tag { color: #bdbdbd; }
+body:not(.tab-build) #nav { right: 131px; top: 69px; gap: 51px; font: bold 19px/1 var(--sans); letter-spacing: 1.1px; }   /* SETTINGS 1045..1149 */
+body:not(.tab-build) #nav a { color: #9b9b9b; }
+body:not(.tab-build) #nav a.on, body:not(.tab-build) #nav a:hover { color: #fff; font-weight: bold; }
+body:not(.tab-build) #avatar { left: auto; right: 38px; top: 55px; width: 44px; height: 44px; box-shadow: 0 0 0 2px #2c2d31; }
+body:not(.tab-build) #avatar img { width: 25px; height: 27px; }
+body:not(.tab-build) #chrome a { color: #a5a5a5; }
+body:not(.tab-build) #side-links .link { color: #6f7075; }
+body:not(.tab-build) #side-links .link:hover { color: #fff; }
+body:not(.tab-build) #side-links { left: 45px; bottom: 30px; }
+
+#page-rows { left: 316px; top: 120px; overflow: auto; }      /* below the header band: content never scrolls under it */
+#rows { position: absolute; left: 80px; top: 26px; width: 800px; padding-bottom: 40px; }       /* 146 px from the window top, as measured */
+.row { position: relative; display: flex; align-items: center; gap: 24px; padding: 21px 0; min-height: 95px; border-bottom: 1px solid #2b2c2f; }
+.row:last-child { border-bottom: 0; }
+.row.short { min-height: 0; padding: 0 0 22px; }
+.row .label { flex: 1; min-width: 0; }
+.row .title { font: 17px/22px var(--sans); color: #fff; }
+.row .desc { margin-top: 6px; font: 15px/18px var(--sans); color: #a0a0a0; overflow-wrap: anywhere; }
+.row .desc.ok { color: #fff; } .row .desc.bad { color: #ff8a80; } .row .desc.warn { color: #fbb017; }
+.row .desc a { color: #a0a0a0; text-decoration: underline; cursor: pointer; }
+.row .controls { display: flex; gap: 14px; align-items: center; flex: none; }
+.row .status { font: bold 13px/1 var(--sans); letter-spacing: 1.2px; color: #a0a0a0; text-transform: uppercase; }
+.row .status.done { color: #fff; } .row .status.running { color: #fbb017; } .row .status.failed { color: #ff8a80; }
+.row .bar { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: transparent; }
+.row .bar i { display: block; height: 100%; background: #fbb017; }
+.heading { font: bold 13px/1 var(--sans); letter-spacing: 1.4px; text-transform: uppercase; color: #6f7075; padding: 26px 0 4px; }
+.heading:first-child { padding-top: 0; }
+
+/* the launcher's square checkbox: 1176..1196 (20 px), a light rim; ticked: an accent square inside */
+.box { width: 20px; height: 20px; border: 1.5px solid #a5a5a5; border-radius: 2px; position: relative; cursor: pointer; flex: none; background: transparent; padding: 0; }
+.box.on::after { content: ""; position: absolute; inset: 3px; background: #fbb017; }
+.box:focus-visible, .box.focus { border-color: #fbb017; outline: none; }
+.box:disabled { opacity: .35; cursor: default; }
+/* the launcher's select (796..1196 x 167..216): 400 x 49, a dark rim, the chevron at the right */
+.select { position: relative; width: 400px; height: 49px; border: 1px solid #3a3b3f; border-radius: 4px; display: flex; align-items: center;
+          padding: 0 40px 0 11px; font: 15px/1 var(--sans); color: #fff; background: transparent; cursor: pointer; }
+.select > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.select svg { position: absolute; right: 18px; top: 21px; color: #d8d8d8; }
+.select select { position: absolute; inset: 0; opacity: 0; cursor: pointer; font: 15px var(--sans); }
+/* the launcher's pill buttons: 168 x 50, radius 25; outline (SETTINGS), white (SCAN NOW), accent (INSTALL) */
+.pill { height: 50px; min-width: 168px; padding: 0 28px; border-radius: 25px; border: 1px solid #55565b; background: transparent;
+        font: 900 14px/1 "Arial Black", Arial, sans-serif; letter-spacing: 1.6px; color: #fff; cursor: pointer; text-transform: uppercase; }
+.pill:hover { border-color: #8a8b90; }
+.pill.white { background: #fff; border-color: #fff; color: #000; }
+.pill.white:hover { background: #e9e9e9; }
+.pill.accent { background: #fbb017; border-color: #fbb017; color: #000; }
+.pill.accent:hover { background: #ffc039; }
+.pill:disabled { opacity: .35; cursor: default; }
+.mono { font: 12px/17px Consolas, Menlo, monospace; color: #d6d6d6; user-select: text; overflow-wrap: anywhere; }
+.thumbs { display: flex; gap: 12px; }
+.thumb { width: 124px; height: 70px; border-radius: 4px; background: center / cover no-repeat #222; border: 2px solid transparent; cursor: pointer; }
+.thumb.on { border-color: #fbb017; }
+#log { position: absolute; left: 80px; width: 800px; height: 220px; margin: 0; padding: 12px 14px; overflow: auto; background: #0e0f11;
+       border: 1px solid #2b2c2f; border-radius: 4px; font: 12px/16px Consolas, Menlo, monospace; color: #cfcfcf; white-space: pre; user-select: text; }
+#log .err { color: #ff8a80; } #log .good { color: #fff; font-weight: bold; }
+
+/* ==== dialogs ================================================================================================ */
+#veil { position: absolute; inset: 0; background: rgba(0, 0, 0, .62); }
+.dialog { position: absolute; background: #141518; border: 1px solid #3b3c40; border-radius: 14px; color: #fff; font-family: var(--sans); }
+/* the installation dialog (owner's 1587 x 1330 capture at 125 %): 1076 x 617, the picture 17 px in, 424 x 582 */
+#build-dialog { left: 50%; top: 50%; width: 1076px; height: 617px; transform: translate(-50%, -50%); overflow: hidden; }
+#build-art { position: absolute; left: 17px; top: 17px; width: 424px; height: 582px; background: #0b0d0c center / cover no-repeat;
+             display: grid; place-items: center; }
+#build-art img { width: 150px; height: 165px; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, .55)); }
+#build-body { position: absolute; left: 500px; right: 41px; top: 0; bottom: 0; }
+#build-body h1 { position: absolute; top: 44px; margin: 0; font: 35px/1.1 var(--sans); }
+#build-sub { position: absolute; top: 102px; left: 0; right: 0; margin: 0; font: 15px/20px var(--sans); color: #fff; }
+#build-path { position: absolute; top: 143px; left: 0; right: 0; display: flex; gap: 21px; }
+#build-path .select { width: 361px; flex: none; }
+#build-path .pill { min-width: 153px; height: 49px; }
+#build-space { position: absolute; top: 210px; right: 0; margin: 0; font: 14px/1 var(--sans); letter-spacing: 1.1px; color: #a0a0a0; text-transform: uppercase; }
+#build-space b { color: #fff; font-weight: normal; margin-left: 16px; }
+#build-space i { color: #47c26b; font-style: normal; margin-left: 10px; }
+#build-space.short i { color: #ff8a80; }
+#build-options { position: absolute; top: 236px; left: 0; right: 0; bottom: 140px; overflow: auto; }
+.option { display: flex; align-items: center; justify-content: space-between; height: 67px; border-bottom: 1px solid #2b2c2f; font: 18px/1 var(--sans); color: #a5a5a5; cursor: pointer; }
+.option:last-child { border-bottom: 0; }
+.option.on { color: #fff; }
+.option.na { color: #5d5e62; cursor: default; }
+.option small { display: block; margin-top: 5px; font-size: 13px; color: #77787c; }
+#build-problem { position: absolute; left: 0; right: 0; bottom: 92px; margin: 0; font: 13px/18px var(--sans); color: #fbb017; }
+#build-buttons { position: absolute; right: 0; bottom: 41px; display: flex; gap: 21px; }
+#build-buttons .pill { min-width: 159px; height: 49px; }
+/* the error dialog (owner's capture, scaled to a 1280 window): 900 x 300 */
+#error-dialog { left: 50%; top: 50%; width: 900px; min-height: 300px; transform: translate(-50%, -50%); padding: 34px 40px 96px; }
+#error-dialog h1 { margin: 0 0 18px; font: 28px/1 var(--sans); }
+#error-dialog p { margin: 0; font: 14px/20px var(--sans); color: #c8c8c8; white-space: pre-wrap; overflow-wrap: anywhere; }
+#error-dialog p a { color: #fbb017; }
+#error-dialog .x { position: absolute; right: 22px; top: 20px; color: #d0d0d0; cursor: pointer; }
+#error-ok { position: absolute; right: 34px; bottom: 30px; min-width: 88px; height: 40px; padding: 0 22px; }

@@ -1,0 +1,257 @@
+"""Host tests of the window's server (tools/own_disc/gui/web_app.py) over builder_core: what the window is told, what its
+clicks do, and that only the window (its token, the loopback address) is answered. Synthetic packages and discs (the
+fixtures of test_builder_core.py); no game data, no browser."""
+from __future__ import annotations
+
+import http.client
+import json
+from pathlib import Path
+import sys
+import threading
+import time
+import unittest
+import unittest.mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import test_builder_core as t           # noqa: E402  the synthetic package fixtures
+import web_app                          # noqa: E402
+
+
+def wait(app, test, seconds=20):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if test(app.snapshot()):
+            return app.snapshot()
+        time.sleep(0.05)
+    raise AssertionError('timed out; last state: ' + json.dumps(app.snapshot())[:1500])
+
+
+class Window(t.Synthetic):
+    def setUp(self):
+        super().setUp()
+        self.fx, self.release = self.package(profile_id='fivepocket-thor-edition-v852-3')
+        self.install = self.install_disc()
+        self.gui_root = self.root / 'gui root'
+        self.gui_root.mkdir()
+        self.picked = []
+        self.answers = []
+        cache = self.cache
+        self.patch = unittest.mock.patch.object(web_app.core.B, 'default_cache', lambda: cache)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def app(self, **kw):
+        def choose(title, folder):
+            self.picked.append(title)
+            return self.answers.pop(0) if self.answers else None
+        return web_app.AppState([str(self.fx.side)], choose=choose, gui_root=self.gui_root, backdrop_dirs=[self.root / 'bd'], **kw)
+
+    def test_the_build_button_waits_for_both_discs_then_builds_and_shows_the_hashes(self):
+        app = self.app()
+        s = wait(app, lambda s: s['compilers'] != 'checking')
+        self.assertFalse(s['primary']['enabled'])
+        self.assertIn('Disc 2 (Play)', s['ready_problems'][0])
+        self.assertEqual([e['short'] for e in s['editions'] if e['shown'] and e['available']], ['FivePocket Thor Edition'])
+        self.answers = [str(self.fx.disc)]
+        app.act('choose_disc', {'slot': 'play'})
+        self.answers = [str(self.install)]
+        app.act('choose_disc', {'slot': 'install'})
+        s = wait(app, lambda s: s['primary']['enabled'])
+        self.assertTrue(s['discs']['play']['ok'] and s['discs']['install']['ok'])
+        self.assertEqual(s['primary']['action'], 'start')
+        app.act('start', {})
+        s = wait(app, lambda s: not s['running'] and s['session'] and s['session']['finished'], 60)
+        self.assertEqual([st['state'] for st in s['session']['steps']], ['done'] * 3)
+        out = s['outputs'][0]
+        self.assertEqual(len(out['sha256']), 64)
+        self.assertTrue(out['verified'])
+        self.assertTrue(any(': verified.' in line for line in app.log_since(0)['lines']))
+
+    def test_too_little_free_space_holds_the_build_with_the_numbers(self):
+        app = self.app()
+        self.answers = [str(self.fx.disc), str(self.install)]
+        app.act('choose_disc', {'slot': 'play'})
+        app.act('choose_disc', {'slot': 'install'})
+        wait(app, lambda s: s['primary']['enabled'])
+        with unittest.mock.patch.object(web_app.shutil, 'disk_usage', lambda p: unittest.mock.Mock(free=0)):
+            s = app.snapshot()
+        self.assertFalse(s['primary']['enabled'])
+        self.assertFalse(s['space']['enough'])
+        self.assertIn('Not enough free space', s['ready_problems'][-1])
+
+    def test_a_failed_step_is_reported_once_with_the_builder_s_own_words(self):
+        app = self.app()
+        self.answers = [str(self.fx.disc), str(self.install)]
+        app.act('choose_disc', {'slot': 'play'})
+        app.act('choose_disc', {'slot': 'install'})
+        wait(app, lambda s: s['primary']['enabled'])
+        (self.fx.side / 'step.py').rename(self.fx.side / 'step-gone.py')   # a payload file goes missing: the builder refuses
+        app.act('start', {})
+        s = wait(app, lambda s: not s['running'] and s['session'] and any(st['state'] == 'failed' for st in s['session']['steps']), 60)
+        self.assertIsNotNone(s['failure'])
+        self.assertIn('RESUME', s['failure']['text'])
+        self.assertEqual(app.snapshot()['failure']['key'], s['failure']['key'])     # the same failure keeps its key
+        self.assertEqual(s['primary']['action'], 'resume')
+
+    def test_a_logo_file_beside_the_window_takes_the_logo_box(self):
+        logos = self.root / 'web'
+        logos.mkdir()
+        app = self.app(logo_dir=logos)
+        self.assertIsNone(app.snapshot()['logo'])                                   # the drawn lockup
+        (logos / 'logo.png').write_bytes(b'png')
+        self.assertEqual(app.snapshot()['logo'], 'logo.png')
+        (logos / 'logo.svg').write_bytes(b'<svg/>')
+        self.assertEqual(app.snapshot()['logo'], 'logo.svg')                        # a vector wins over a picture
+
+    def test_logo_files_are_chosen_by_edition_and_backdrop(self):
+        web = self.root / 'web'
+        (web / 'logos').mkdir(parents=True)
+        (self.root / 'bd').mkdir()
+        for name in ('pink-blue-dusk.jpg', 'golden-sunset.jpg'):
+            (self.root / 'bd' / name).write_bytes(b'x')
+        for name in ('five-pocket-thor-pink-blue-dusk.png', 'five-pocket-thor-golden-sunset.png', 'five-pocket-ios.png',
+                     'five-pocket-duo-unknown-backdrop.png', 'notes.txt', 'five-pocket-nothing.png'):
+            (web / 'logos' / name).write_bytes(b'x')
+        logos = self.app(logo_dir=web).snapshot()['logos']
+        self.assertEqual(logos['thor'], {'pink-blue-dusk': 'logos/five-pocket-thor-pink-blue-dusk.png',
+                                         'golden-sunset': 'logos/five-pocket-thor-golden-sunset.png'})
+        self.assertEqual(logos['ios'], {'*': 'logos/five-pocket-ios.png'})                # every backdrop
+        self.assertNotIn('duo', logos)                                                    # names no backdrop of ours
+
+    def test_button_pictures_are_reported_by_word(self):
+        web = self.root / 'web'
+        web.mkdir()
+        self.assertEqual(self.app(logo_dir=web).snapshot()['button_art'], {})            # the drawn button
+        for name in ('button-build.png', 'button-blank.png', 'button-other.png'):
+            (web / name).write_bytes(b'x')
+        self.assertEqual(self.app(logo_dir=web).snapshot()['button_art'], {'build': 'button-build.png', 'blank': 'button-blank.png'})
+
+    def test_a_disc_put_in_the_wrong_slot_moves_to_its_own(self):
+        app = self.app()
+        self.answers = [str(self.fx.disc)]
+        app.act('choose_disc', {'slot': 'install'})
+        s = wait(app, lambda s: s['discs']['play'] and not s['discs']['play']['checking'])
+        self.assertTrue(s['discs']['play']['ok'])
+        self.assertIsNone(s['discs']['install'])
+
+    def test_backdrops_are_listed_by_name_and_the_choice_is_kept(self):
+        (self.root / 'bd').mkdir()
+        for name in ('la-dusk.jpg', 'la-sunset.jpg', 'notes.txt'):
+            (self.root / 'bd' / name).write_bytes(b'x')
+        app = self.app()
+        s = app.snapshot()
+        self.assertEqual([b['name'] for b in s['backdrops']], ['LA Dusk', 'LA Sunset'])
+        self.assertEqual(s['backdrop'], 'la-dusk')
+        app.act('set_backdrop', {'id': 'la-sunset'})
+        self.assertEqual(self.app().snapshot()['backdrop'], 'la-sunset')         # a new window remembers it
+        app.act('set_backdrop', {'id': '../../etc'})
+        self.assertEqual(app.snapshot()['backdrop'], 'la-sunset')
+
+    def test_only_the_window_with_its_token_is_answered(self):
+        app = self.app()
+        token = 'secret-token'
+        server = web_app.Server(('127.0.0.1', 0), web_app.make_handler(app, token))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+
+        def get(path, headers=None, method='GET', body=None):
+            c = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+            c.request(method, path, body=body, headers=headers or {})
+            r = c.getresponse()
+            return r.status, r.read()
+        self.assertEqual(get('/api/state')[0], 403)
+        self.assertIsNone(app.last_seen)
+        status, body = get('/api/state', {'X-Token': token})
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(app.last_seen)                                           # a poll keeps the server alive
+        self.assertIn('primary', json.loads(body))
+        self.assertEqual(get('/api/action', {'X-Token': 'wrong'}, 'POST', b'{"name":"start"}')[0], 403)
+        self.assertEqual(get('/index.html')[0], 200)                                  # the page itself needs no token
+        self.assertEqual(get('/../web_app.py')[0], 404)
+        self.assertEqual(get('/%2e%2e/web_app.py')[0], 404)
+        self.assertEqual(server.server_address[0], '127.0.0.1')
+
+
+    def test_the_server_ends_when_the_window_stops_polling_and_a_second_start_finds_the_first(self):
+        self.assertFalse(web_app.window_gone(None, 0, web_app.GRACE - 1))             # the window may take a while to come
+        self.assertTrue(web_app.window_gone(None, 0, web_app.GRACE + 1))              # it never came
+        self.assertFalse(web_app.window_gone(100, 0, 100 + web_app.GONE - 1))         # it polls
+        self.assertTrue(web_app.window_gone(100, 0, 100 + web_app.GONE + 1))          # it stopped polling: closed
+        app = self.app()
+        state_dir = self.gui_root / 'state'
+        state_dir.mkdir()
+        self.assertIsNone(web_app.running_instance(state_dir))                         # nothing recorded
+        server = web_app.Server(('127.0.0.1', 0), web_app.make_handler(app, 'tok'))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+        (state_dir / web_app.WINDOW_FILE).write_text(json.dumps({'port': port, 'token': 'tok'}))
+        self.assertEqual(web_app.running_instance(state_dir), f'http://127.0.0.1:{port}/index.html?t=tok')
+        (state_dir / web_app.WINDOW_FILE).write_text(json.dumps({'port': port, 'token': 'not-its-token'}))
+        self.assertIsNone(web_app.running_instance(state_dir))                         # another program on that port
+        server.shutdown()
+        server.server_close()
+        (state_dir / web_app.WINDOW_FILE).write_text(json.dumps({'port': port, 'token': 'tok'}))
+        self.assertIsNone(web_app.running_instance(state_dir))                         # it ended
+
+
+
+class LinuxDesktop(unittest.TestCase):
+    """Linux: the desktop's open dialog and the window's browser (no desktop here: the programs are stood in for)."""
+
+    def run_dialog(self, installed, title, folder, image_filter=True, out='/home/p/Disc 2.iso\n', code=0):
+        calls = []
+        def run(argv, **kw):
+            calls.append(argv)
+            return unittest.mock.Mock(returncode=code, stdout=out)
+        with unittest.mock.patch.object(web_app.sys, 'platform', 'linux'), \
+                unittest.mock.patch.object(web_app.shutil, 'which', lambda n: f'/usr/bin/{n}' if n in installed else None), \
+                unittest.mock.patch.object(web_app.subprocess, 'run', run):
+            return web_app.choose_path(title, folder, image_filter), calls
+
+    def test_the_disc_and_folder_dialogs_come_from_zenity_or_kdialog(self):
+        got, calls = self.run_dialog({'zenity', 'kdialog'}, 'Disc 2 (Play): your disc image', False, out='/home/p/Disc 2.iso \n')
+        self.assertEqual(got, '/home/p/Disc 2.iso ')                # spaces in the name stay, even at its end; only the line end goes
+        self.assertEqual(calls, [['zenity', '--file-selection', '--title=Disc 2 (Play): your disc image',
+                                  '--file-filter=Xbox 360 disc image (*.iso) | *.iso *.ISO', '--file-filter=All files | *']])
+        got, calls = self.run_dialog({'zenity'}, 'Where the finished files go', True, out='/home/p/out\n')
+        self.assertEqual((got, calls[0][-1]), ('/home/p/out', '--directory'))
+        got, calls = self.run_dialog({'kdialog'}, 'Disc 1', False)
+        self.assertEqual(calls[0][:4], ['kdialog', '--title', 'Disc 1', '--getopenfilename'])
+        self.assertEqual(calls[0][-1], '*.iso *.ISO|Xbox 360 disc image (*.iso)')
+        got, calls = self.run_dialog({'kdialog'}, 'Folder', True, out='/home/p/out\n')
+        self.assertEqual((got, calls[0][3]), ('/home/p/out', '--getexistingdirectory'))
+        self.assertEqual(self.run_dialog({'zenity'}, 'Disc 1', False, out='', code=1)[0], None)    # cancelled
+        self.assertEqual(self.run_dialog(set(), 'Disc 1', False), (None, []))                       # neither installed
+
+    def show(self, installed, wait):
+        process = unittest.mock.Mock()
+        process.wait.side_effect = wait
+        opened, started = [], []
+        def popen(argv, **kw):
+            started.append(argv)
+            return process
+        with unittest.mock.patch.object(web_app.sys, 'platform', 'linux'), \
+                unittest.mock.patch.object(web_app.shutil, 'which', lambda n: f'/usr/bin/{n}' if n in installed else None), \
+                unittest.mock.patch.object(web_app.subprocess, 'Popen', popen), \
+                unittest.mock.patch.object(web_app.webbrowser, 'open', opened.append):
+            import tempfile
+            with tempfile.TemporaryDirectory() as state:
+                web_app.show_window('http://127.0.0.1:1/index.html?t=x', Path(state))
+                return started, opened, (Path(state) / 'window-profile').is_dir()
+
+    def test_the_window_opens_in_app_mode_or_falls_back_to_the_default_browser(self):
+        url = 'http://127.0.0.1:1/index.html?t=x'
+        started, opened, profile = self.show({'chromium', 'google-chrome'}, web_app.subprocess.TimeoutExpired('chrome', 3))
+        self.assertEqual([a[:2] for a in started], [['/usr/bin/google-chrome', f'--app={url}']])   # running after 3 s: the window is up
+        self.assertEqual((opened, profile), ([], True))
+        started, opened, _ = self.show({'chromium'}, [1])                    # ended at once with an error (a confined snap browser)
+        self.assertEqual((len(started), opened), (1, [url]))
+        started, opened, _ = self.show({'chromium'}, [0])                    # handed to a browser already running: done
+        self.assertEqual(opened, [])
+        started, opened, _ = self.show(set(), None)                          # none installed
+        self.assertEqual((started, opened), ([], [url]))
+
+
+if __name__ == '__main__':
+    unittest.main()

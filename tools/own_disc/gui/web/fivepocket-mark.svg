@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="30 31 48 53" width="48" height="53">
+  <!-- The FivePocket mark: the app icon's shapes (android/app/src/main/res/drawable/ic_launcher_foreground.xml) as a
+       vector with a transparent background: a light V of two slanted bars and the menu's green line under it. -->
+  <path fill="#EEF0EC" d="M32 33h11l11 24v17z"/>
+  <path fill="#EEF0EC" d="M76 33H65L54 57v17z"/>
+  <path fill="#ACECA9" d="M39 79h30v3H39z"/>
+</svg>
