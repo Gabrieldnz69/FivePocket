@@ -22,7 +22,13 @@ package dev.recompbootstrap.smoke;
  * button pressed during that hold (A, B, Start, Y, L1, R1) does not end it; only a fresh direction does.
  *
  * Touch: a tap on a column item that is not highlighted only moves the highlight there; a tap on the highlighted
- * one is A.
+ * one is A. A tap on another tab selects it with the highlight on the tab strip (as LEFT / RIGHT there); a tap on the
+ * current tab from the strip is A.
+ *
+ * The launcher opens on the tab strip (onTabBar; owner 2026-11-08 on the Thor, carried to this edition: "the
+ * play/settings/controller/about section should have the top banner highlighted and then press A to go to the next menu
+ * screen"): PLAY selected, no item highlighted; LEFT / RIGHT walk the tabs, A (or DOWN) goes into the tab's page onto its
+ * remembered item, B there goes back up.
  */
 final class ShellNav {
     static final int PLAY = 0, SETTINGS = 1, CONTROLLER = 2, ABOUT = 3, TABS = 4;
@@ -76,6 +82,13 @@ final class ShellNav {
     private int enteredBy = NavInput.NONE;
     /** The last command, tap or granted leave took the highlight from a column item or its pane up to the tab strip. */
     private boolean wentToStrip;
+
+    /** The launcher's frame as it opens: the Play tab selected, the highlight on the tab strip (no item highlighted). */
+    static ShellNav onTabBar() {
+        ShellNav nav = new ShellNav();
+        nav.onStrip = true;
+        return nav;
+    }
 
     int tab() {
         return tab;
@@ -213,7 +226,7 @@ final class ShellNav {
             return MOVED;
         }
         int answer = changeTab(target, unsaved);
-        if (answer == TAB) onStrip = false;
+        if (answer == TAB) onStrip = true;   // (2026-11-08: selected, as LEFT / RIGHT on the strip; A or a second tap goes in)
         return answer;
     }
 

@@ -474,8 +474,8 @@ editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/JsonL
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchAdvice.java	19689	5987b13eed14912eec4fea06a40fadb73373b53ba9efd82f6f75b0d2f30ea923
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchExit.java	2323	ea129b3292e0bfe7901e293ed6d1c3d69c028fc2542e214c9802a5417c4ee929
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchOutcome.java	9227	bdef9665236721933cff19b2e9783b0d84c042fbe12caa25e56f6000a65f52ae
-editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchRequest.java	29448	dad2f632c5ddf2f0a610bdd1960df19babc3a7989f767fdffce12c894d68143b
-editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/LauncherMenu.java	26696	3e90ecfbf63f3e6199afa301ff51695db8d26c5b4e5660b414417f8f8089be0f
+editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchRequest.java	29485	39ea2ba78f3336c6cbf4cede434b6388ca1b3a838c94179516a8e1e88278eb21
+editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/LauncherMenu.java	28476	28334fea77aae392e2da46725d17039c32a8061a1a10d60803721f4f511b9c65
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/LauncherScreen.java	22963	4bd54749a8303dce0cd4eb7b960ddf41cc780983db3607e2d49afd6113feca51
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/MenuLayout.java	29656	ffd10b5f6df59422f01d52e198ce1106a9fd0ac76ffa10a4d81302b7cf6abb4d
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/MenuModel.java	34372	e25dfa3ee8ab8b85ffca5d4285c711ae4ca8816c0e83b6bf4990c768690993db
@@ -496,7 +496,7 @@ editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/NavIn
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/PadTouchpad.java	2132	24b3e57a721b7cf007ba87eba03dd60972d211964c4573c987d7f902317b8a0a
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/PerformancePresets.java	6157	1014f8e7944ece6c933dd9633d10ee472552e86adf74b68c188b81c064628a4c
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/PhysicalMotionLog.java	4943	fe4a0c4780fb78cd496ae1109fe70d889e8da460b2d82a1e28186ea0962de37d
-editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/PlayMode.java	6726	4c2c0db39d7543c8a60cb203adbaa8e061cf5dfc6ee138f89a727ae371296181
+editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/PlayMode.java	8078	8a072fee16253e4ef1a52f1faf614e72a60bb363e8cb287f84fd2e557dc37e6a
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/PublicCodeWords.java	5926	22785d09b55b56601faf2f9c124de1be6488e711910af9a92911b9abfac79e34
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/PublicGameCode.java	7971	877968a7f41f43dc2e0aba3dc456808d6d9d709ae16be07903277a041018c18a
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/PublicSetupModel.java	3481	d4e10b56b2dfe32944c302faa595fab99698d70c38dd261ebed883b8eb82a70c
@@ -505,7 +505,7 @@ editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/Right
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/RumbleMapper.java	7430	4080b26624b6b68282e7137e554b74a0f17a64fcdfa715577d5956c9a1bd7e25
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/RumbleTarget.java	2074	33590c9d38a6cd7df8945af02e023b228b1cc8f3cd7098d96565dd34b111d2cc
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/RuntimeMapping.java	42108	bc9809bf04e0d3faedaade9b585f278511637106b3a5d778694904c95f127284
-editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/SandboxReady.java	12427	8fd1986057c1b191d4d321bc1177e7218286d12e47bee97b79406045a38b6b77
+editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/SandboxReady.java	13196	a4a289dfd2c27ff80e4bec65163b5b71199bbae0af1629fa96bdacd1df60dc33
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/Scene.java	11740	7f669af0a1b2f1a49dff375e25c5bfd7aa8be737306f6cedf4d21fa8946f89d9
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/Screen.java	1560	e5b95b56313055ff4fe2ab4d9cbe70abc6f0a97d5d97de50f74856ec2e2494cf
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/ScreenHost.java	867	c2860d44916012a4fac0d4db412e4d67c76294183d31cfa1db744ec132041d9c
@@ -529,7 +529,7 @@ editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/Setup
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/SetupPickerRoute.java	442	fbc00bc081516d710cea3d6b408666f6caaad17e0b3a288db1d59a00884d21e0
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/SetupScreen.java	17359	a93d121fbde22fccf8a44f09b9e989da5362666bf2380e7cfb07f1d7cdb33914
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/ShellNav.java	13884	9ffe133262ba67fbe94d99f6f8b4006c0e66bd1a7578c68b3bf9c4062d7f770d
-editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/ShellPages.java	16952	b61aff9c3884d8c4c02e5a21ad23603eddeba4a6daa05c12b6daaa3eb5b9f00c
+editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/ShellPages.java	16978	ff02613a3d36a781e315edfa05a2034f323697103903031f07e2367ca238225f
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/ShipAdvice.java	14163	b88d52cf96250b1f1a78d6d9d41eedeb8a554badee0d134c4962606a7b005018
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/ShipApplication.java	2160	93f1f58b39155af06f6668fff3f0614ec0e61a48a6c132f0b25194657cadc942
 editions/single-screen/android/app/src/main/java/dev/recompbootstrap/smoke/ShipBundle.java	1375	2dc62cbcaa2f6da01f6c6cd7030b735ff01ac504c39ec9a4a3d56974d4b64163
@@ -1086,10 +1086,10 @@ editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/JsonLi
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchAdvice.java	19689	5987b13eed14912eec4fea06a40fadb73373b53ba9efd82f6f75b0d2f30ea923
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchExit.java	2323	ea129b3292e0bfe7901e293ed6d1c3d69c028fc2542e214c9802a5417c4ee929
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchOutcome.java	9227	bdef9665236721933cff19b2e9783b0d84c042fbe12caa25e56f6000a65f52ae
-editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchRequest.java	29448	dad2f632c5ddf2f0a610bdd1960df19babc3a7989f767fdffce12c894d68143b
+editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LaunchRequest.java	29485	39ea2ba78f3336c6cbf4cede434b6388ca1b3a838c94179516a8e1e88278eb21
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LauncherLowerScreen.java	4681	d3ae43a8b472b906decfb2f6f38dcfa4536d24e78fc45dc6c73c05cc4ae97b78
-editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LauncherMenu.java	26696	3e90ecfbf63f3e6199afa301ff51695db8d26c5b4e5660b414417f8f8089be0f
-editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LauncherScreen.java	22619	42713ac2d70fde85a6c23c0343b6e892ff1ae81368d219c33d8386df3d1180a7
+editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LauncherMenu.java	28476	28334fea77aae392e2da46725d17039c32a8061a1a10d60803721f4f511b9c65
+editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/LauncherScreen.java	22701	2847e0c9591530c47b4e62d978bf827bdf3099aa1c8b49bb929cfc295e09a57a
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/MenuLayout.java	28066	eba156561b5ac03e94e8e704f58c35e80752ff3948158a58db13f0a7fabbef0d
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/MenuModel.java	34009	43d95a189dd3306855c857aaadcde76e60f961c9df6095da30c577613f2a3873
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/MenuScenes.java	41894	9b1a4c85ab1bdf11469ab4ea0207880fe6fc848fda2e9e528679cdd98f913eec
@@ -1109,7 +1109,7 @@ editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/NavInp
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/PadTouchpad.java	2132	24b3e57a721b7cf007ba87eba03dd60972d211964c4573c987d7f902317b8a0a
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/PerformancePresets.java	6157	1014f8e7944ece6c933dd9633d10ee472552e86adf74b68c188b81c064628a4c
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/PhysicalMotionLog.java	4943	fe4a0c4780fb78cd496ae1109fe70d889e8da460b2d82a1e28186ea0962de37d
-editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/PlayMode.java	6726	4c2c0db39d7543c8a60cb203adbaa8e061cf5dfc6ee138f89a727ae371296181
+editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/PlayMode.java	8078	8a072fee16253e4ef1a52f1faf614e72a60bb363e8cb287f84fd2e557dc37e6a
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/PublicCodeWords.java	5926	22785d09b55b56601faf2f9c124de1be6488e711910af9a92911b9abfac79e34
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/PublicGameCode.java	7971	877968a7f41f43dc2e0aba3dc456808d6d9d709ae16be07903277a041018c18a
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/PublicSetupModel.java	3481	d4e10b56b2dfe32944c302faa595fab99698d70c38dd261ebed883b8eb82a70c
@@ -1118,7 +1118,7 @@ editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/RightS
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/RumbleMapper.java	7430	4080b26624b6b68282e7137e554b74a0f17a64fcdfa715577d5956c9a1bd7e25
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/RumbleTarget.java	2074	33590c9d38a6cd7df8945af02e023b228b1cc8f3cd7098d96565dd34b111d2cc
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/RuntimeMapping.java	45885	1a9eaaa212dbc9e467d29afc95f3b97e205797dff74d8827246637bffb9d3d55
-editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/SandboxReady.java	12427	8fd1986057c1b191d4d321bc1177e7218286d12e47bee97b79406045a38b6b77
+editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/SandboxReady.java	13196	a4a289dfd2c27ff80e4bec65163b5b71199bbae0af1629fa96bdacd1df60dc33
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/Scene.java	11580	592fbd84bc5333b843f92b09d23675382c3860bd20e242738d23f3f35bc7812d
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/Screen.java	1560	e5b95b56313055ff4fe2ab4d9cbe70abc6f0a97d5d97de50f74856ec2e2494cf
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/ScreenHost.java	867	c2860d44916012a4fac0d4db412e4d67c76294183d31cfa1db744ec132041d9c
@@ -1142,8 +1142,8 @@ editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/SetupD
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/SetupModel.java	30168	9b16d40d871df95bc7ee014dbf9b136ed6a32cd4343b3991050f6d05d6ba61db
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/SetupPickerRoute.java	442	fbc00bc081516d710cea3d6b408666f6caaad17e0b3a288db1d59a00884d21e0
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/SetupScreen.java	17162	c5b6e6361a3f0352619b62555b03cf513fcc4e77ceb785c26b061c080ee9033e
-editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/ShellNav.java	13010	2308ba30656047ac17503f86991586f4aa98be6989ffb27364df9bbf0165d407
-editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/ShellPages.java	16089	4db901a03787b15f6f9e93c79bdc2b5a08c78ecbce35783d0232da283593039e
+editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/ShellNav.java	13884	9ffe133262ba67fbe94d99f6f8b4006c0e66bd1a7578c68b3bf9c4062d7f770d
+editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/ShellPages.java	16115	229df05cf49488845510c495fd66b8b52ce6b709272a2d2110153f4c5cbf3875
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/ShipAdvice.java	14092	a26901bdc7df9ad8ad482cd817716aa1a35c32894ad4c33d8a7aecc0acaae6f3
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/ShipApplication.java	2160	93f1f58b39155af06f6668fff3f0614ec0e61a48a6c132f0b25194657cadc942
 editions/thor-edition/android/app/src/main/java/dev/recompbootstrap/smoke/ShipBundle.java	1375	2dc62cbcaa2f6da01f6c6cd7030b735ff01ac504c39ec9a4a3d56974d4b64163

@@ -125,7 +125,7 @@ final class LaunchRequest {
          * four only, and the game then plays Story Mode as before.
          */
         String[][] extras(String playMode) {
-            if (!PlayMode.STORY.equals(playMode) && !PlayMode.SANDBOX.equals(playMode)) {
+            if (!PlayMode.STORY.equals(playMode) && !PlayMode.SANDBOX.equals(playMode) && !PlayMode.ONLINE.equals(playMode)) {
                 throw new IllegalArgumentException("not a play mode: " + playMode);
             }
             String[][] four = extras();

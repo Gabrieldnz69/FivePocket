@@ -95,7 +95,8 @@ final class ShellPages {
      * the menu offers Sandbox (LauncherMenu.playItems() == 2), else the one first item.
      */
     static int playItem(int column, LauncherMenu menu) {
-        return column == 1 && menu.playItems() == 2 ? LauncherMenu.SANDBOX : LauncherMenu.PRIMARY;
+        int[] order = menu.playOrder();   // (Update 1: Story Mode, then Sandbox and Online while each is offered)
+        return column >= 0 && column < order.length ? order[column] : LauncherMenu.PRIMARY;
     }
 
     /**
@@ -105,13 +106,16 @@ final class ShellPages {
      */
     static void play(MenuScenes.Page page, ShellNav nav, LauncherMenu menu, String controllerName, TimeZone zone) {
         boolean onItem = nav.level() != ShellNav.STRIP;
-        boolean two = menu.playItems() == 2;
+        int[] order = menu.playOrder();
         int item = playItem(nav.column(ShellNav.PLAY), menu);
-        page.column = two ? new String[] {Scene.titleCase(menu.label(LauncherMenu.PRIMARY)), Scene.titleCase(menu.label(LauncherMenu.SANDBOX))}
-                : new String[] {Scene.titleCase(menu.label(LauncherMenu.PRIMARY))};
-        page.columnEnabled = two ? new boolean[] {menu.enabled(LauncherMenu.PRIMARY), menu.enabled(LauncherMenu.SANDBOX)}
-                : new boolean[] {menu.enabled(LauncherMenu.PRIMARY)};
-        page.columnSelected = item == LauncherMenu.SANDBOX ? 1 : 0;
+        page.column = new String[order.length];
+        page.columnEnabled = new boolean[order.length];
+        page.columnSelected = 0;
+        for (int i = 0; i < order.length; i++) {
+            page.column[i] = Scene.titleCase(menu.label(order[i]));
+            page.columnEnabled[i] = menu.enabled(order[i]);
+            if (order[i] == item) page.columnSelected = i;
+        }
         page.columnLit = onItem;
         page.info.add(new MenuScenes.Line(menu.stateLine(),
                 menu.stateLineIsWarning() ? MenuScenes.TONE_WARNING : MenuScenes.TONE_NORMAL));
@@ -120,13 +124,13 @@ final class ShellPages {
         String failure = menu.failure(), second = menu.secondLine(LauncherMenu.PRIMARY);
         if (failure != null) {
             page.info.add(new MenuScenes.Line(failure, menu.failureIsError() ? MenuScenes.TONE_ERROR : MenuScenes.TONE_WARNING));
-        } else if (item == LauncherMenu.SANDBOX && second != null) {
+        } else if (item != LauncherMenu.PRIMARY && second != null) {
             page.info.add(new MenuScenes.Line(second, MenuScenes.TONE_NORMAL));   // "already running", "Checking game code…"
         }
-        if (item == LauncherMenu.SANDBOX) {
-            String sandbox = menu.secondLine(LauncherMenu.SANDBOX);
-            if (sandbox != null) page.info.add(new MenuScenes.Line(sandbox,
-                    menu.enabled(LauncherMenu.SANDBOX) ? MenuScenes.TONE_NORMAL : MenuScenes.TONE_WARNING));
+        if (item != LauncherMenu.PRIMARY) {   // (Sandbox or Online: what it is, or why it cannot be chosen yet)
+            String line = menu.secondLine(item);
+            if (line != null) page.info.add(new MenuScenes.Line(line,
+                    menu.enabled(item) ? MenuScenes.TONE_NORMAL : MenuScenes.TONE_WARNING));
         } else if (failure == null && second != null) {
             page.info.add(new MenuScenes.Line(second, menu.secondLineTone(LauncherMenu.PRIMARY) == LauncherMenu.Tone.ERROR
                     ? MenuScenes.TONE_ERROR : MenuScenes.TONE_NORMAL));

@@ -30,6 +30,9 @@ final class SandboxReady {
     enum Code { SUPPORTED, MISSING, UNKNOWN }
 
     static final String EXPORT = "recomp_play_mode_v1";
+    /** Update 1 Online mode: a library that plays mode 3 (Online: its own save root, the local session) exports this function;
+     *  without it the Play tab offers no Online. */
+    static final String ONLINE_EXPORT = "recomp_play_mode_online_v1";
     static final String SAVED_GAME_TYPE = "00000001";
     /** Bounds of the walk: a damaged tree must not keep the look busy. */
     static final int MAX_ENTRIES = 4096;
@@ -38,17 +41,24 @@ final class SandboxReady {
 
     final boolean storySave;
     final Code code;
+    /** Update 1: the installed game code defines ONLINE_EXPORT (Online mode); false when not, or when it cannot be told. */
+    final boolean online;
 
     SandboxReady(boolean storySave, Code code) {
+        this(storySave, code, false);
+    }
+
+    SandboxReady(boolean storySave, Code code, boolean online) {
         this.storySave = storySave;
         this.code = code;
+        this.online = online;
     }
 
     /** Both facts for the app's files directory (the game code is files/private-trace/private-trace-live.so). */
     static SandboxReady look(File filesDir) {
         File library = new File(new File(filesDir, InstallState.PRIVATE_TRACE), InstallState.LIVE_LIBRARY);
         File root = storyRoot(filesDir);   // (upd1-wave3 S8: the root the game code seeds Sandbox from, not always files/)
-        return new SandboxReady(root != null && storySave(root), code(library));
+        return new SandboxReady(root != null && storySave(root), code(library), code(library, ONLINE_EXPORT) == Code.SUPPORTED);
     }
 
     /** The developer switch the game code reads at its first save access (save_sandbox.h SwitchRelative); absent for every player. */
@@ -167,6 +177,11 @@ final class SandboxReady {
      * within the bounds; the launcher then offers Sandbox and the game window's own check decides.
      */
     static Code code(File library) {
+        return code(library, EXPORT);
+    }
+
+    /** Whether the library defines the function export (as below for EXPORT). */
+    static Code code(File library, String export) {
         try (FileChannel in = FileChannel.open(library.toPath(), StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
             long size = in.size();
             ByteBuffer header = read(in, 0, 64, size);
@@ -190,7 +205,7 @@ final class SandboxReady {
                 ByteBuffer symbols = read(in, symbolsAt, symbolsSize, size);
                 ByteBuffer names = read(in, stringsAt, stringsSize, size);
                 if (symbols == null || names == null) return Code.UNKNOWN;
-                byte[] wanted = EXPORT.getBytes(StandardCharsets.US_ASCII);
+                byte[] wanted = export.getBytes(StandardCharsets.US_ASCII);
                 for (int symbol = 0; symbol + 24 <= symbols.capacity(); symbol += 24) {
                     long name = symbols.getInt(symbol) & 0xffffffffL;
                     int info = symbols.get(symbol + 4) & 0xff;

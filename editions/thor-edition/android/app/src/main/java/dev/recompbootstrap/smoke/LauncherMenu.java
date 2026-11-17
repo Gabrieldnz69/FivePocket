@@ -28,6 +28,8 @@ final class LauncherMenu {
     static final int PRIMARY = 0, SETTINGS = 1, CONTROLLER_CHECK = 2, ABOUT = 3, COUNT = 4;
     /** Update 1: the second item of the Play tab (only while sandboxOffered()). */
     static final int SANDBOX = 4;
+    /** Update 1 Online mode (owner 2026-11-07): the Play tab's third item, only while onlineOffered() (the game code has it). */
+    static final int ONLINE = 5;
 
     /** What the screen must do after a confirm or a tap. */
     enum Action { NONE, PLAY, RECHECK, OPEN_SETTINGS, OPEN_CONTROLLER_CHECK, OPEN_ABOUT,
@@ -165,9 +167,24 @@ final class LauncherMenu {
         return sandbox != null && install != null && install.ready() && launchHelperPresent;
     }
 
-    /** How many items the Play tab's column has: 2 while sandboxOffered(), else 1. */
+    /** Update 1: True when the Play tab also holds Online: the game is ready, the game window can start, and the installed game code
+     *  defines SandboxReady.ONLINE_EXPORT. A library without it shows no Online (nothing to start); Story and Sandbox are unchanged. */
+    boolean onlineOffered() {
+        return sandbox != null && sandbox.online && install != null && install.ready() && launchHelperPresent;
+    }
+
+    /** The Play tab's column, top to bottom: the first item, then Sandbox and Online while each is offered. */
+    int[] playOrder() {
+        boolean s = sandboxOffered(), o = onlineOffered();
+        if (s && o) return new int[] {PRIMARY, SANDBOX, ONLINE};
+        if (s) return new int[] {PRIMARY, SANDBOX};
+        if (o) return new int[] {PRIMARY, ONLINE};
+        return new int[] {PRIMARY};
+    }
+
+    /** How many items the Play tab's column has (playOrder's length: 1 to 3). */
     int playItems() {
-        return sandboxOffered() ? 2 : 1;
+        return playOrder().length;
     }
 
     /** For the screen, right after confirm returned PLAY: the mode of this Play (PlayMode.STORY or SANDBOX). */
@@ -256,7 +273,7 @@ final class LauncherMenu {
                     return "Checking…";
                 }
                 if (install.ready()) {
-                    return sandboxOffered() ? PlayMode.LABEL_STORY : "Play";
+                    return sandboxOffered() || onlineOffered() ? PlayMode.LABEL_STORY : "Play";
                 }
                 if (publicApp) return "Set Up Game";
                 if (!selfInstalling) {
@@ -271,6 +288,8 @@ final class LauncherMenu {
                 return "About";
             case SANDBOX:
                 return PlayMode.LABEL_SANDBOX;
+            case ONLINE:
+                return PlayMode.LABEL_ONLINE;
             default:
                 throw new IllegalArgumentException("no such item: " + item);
         }
@@ -288,6 +307,9 @@ final class LauncherMenu {
             case SANDBOX:
                 // A story save to start from, and game code that has Sandbox (UNKNOWN: the game window decides).
                 return sandboxOffered() && sandbox.storySave && sandbox.code != SandboxReady.Code.MISSING;
+            case ONLINE:
+                // its own save root, seeded from a copy of the story saves: without one the game would start a new game (the prologue)
+                return onlineOffered() && sandbox.storySave;
             default:
                 throw new IllegalArgumentException("no such item: " + item);
         }
@@ -310,6 +332,9 @@ final class LauncherMenu {
                 if (!sandboxOffered()) return null;
                 if (sandbox.code == SandboxReady.Code.MISSING) return PlayMode.SANDBOX_NOT_IN_CODE;
                 return sandbox.storySave ? PlayMode.SANDBOX_LINE : PlayMode.SANDBOX_NEEDS_SAVE;
+            case ONLINE:
+                if (!onlineOffered()) return null;
+                return sandbox.storySave ? PlayMode.ONLINE_LINE : PlayMode.ONLINE_NEEDS_SAVE;
             default:
                 throw new IllegalArgumentException("no such item: " + item);
         }
@@ -344,7 +369,7 @@ final class LauncherMenu {
 
     /** A tap on an item: it takes the focus and is activated. */
     Action tap(int item, boolean gameRunning) {
-        if (item != SANDBOX && (item < 0 || item >= COUNT)) {
+        if (item != SANDBOX && item != ONLINE && (item < 0 || item >= COUNT)) {
             throw new IllegalArgumentException("no such item: " + item);
         }
         focused = item;
@@ -368,6 +393,9 @@ final class LauncherMenu {
             case SANDBOX:
                 // enabled: the files are ready and Sandbox can start (see enabled); the same start as Story Mode's
                 return play(PlayMode.SANDBOX, gameRunning, answeredYes && PlayMode.SANDBOX.equals(askedFor), answeredGpu);
+            case ONLINE:
+                // enabled: the game code has Online (see enabled); the same start as the others, mode "online"
+                return play(PlayMode.ONLINE, gameRunning, answeredYes && PlayMode.ONLINE.equals(askedFor), answeredGpu);
             case PRIMARY:
                 if (!install.ready() && selfInstalling) {
                     // Nothing is looked at again here: the page that opens does the work, and the return from it
@@ -381,7 +409,7 @@ final class LauncherMenu {
                     setPlayMessage(CHECKING_AGAIN, false, null);
                     return Action.RECHECK;
                 }
-                return play(PlayMode.STORY, gameRunning, answeredYes && !PlayMode.SANDBOX.equals(askedFor), answeredGpu);
+                return play(PlayMode.STORY, gameRunning, answeredYes && !PlayMode.SANDBOX.equals(askedFor) && !PlayMode.ONLINE.equals(askedFor), answeredGpu);
             case SETTINGS:
                 return Action.OPEN_SETTINGS;
             case CONTROLLER_CHECK:
@@ -425,7 +453,7 @@ final class LauncherMenu {
      */
     private void stillRunning(String chosen) {
         boolean otherMode = startedMode != null && !startedMode.equals(chosen);
-        setPlayMessage(otherMode ? PlayMode.switchWhileRunning(startedMode) : ALREADY_RUNNING, false, null);
+        setPlayMessage(otherMode ? PlayMode.switchWhileRunning(startedMode, chosen) : ALREADY_RUNNING, false, null);
         runningNote = true;
     }
 

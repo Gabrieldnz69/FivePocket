@@ -26,7 +26,7 @@ final class LauncherScreen implements Screen, UiKit.Listener {
     private ScreenHost host;
     private GameLauncher gameLauncher;   // null when this build has no launch helper
     private LauncherMenu menu;
-    private final ShellNav nav = new ShellNav();
+    private final ShellNav nav = ShellNav.onTabBar();   // (2026-11-08, owner: the menu opens on the tab bar; A goes into the tab)
     private SettingsScreen settings;
     private AboutScreen about;
     private UiKit.SceneView view;

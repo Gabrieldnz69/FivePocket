@@ -23,9 +23,13 @@ final class PlayMode {
     /** The start request's extra and its two values. */
     static final String EXTRA = "play_mode";
     static final String STORY = "story", SANDBOX = "sandbox";
+    /** Update 1 Online mode (owner 2026-11-07): the game's own online flow on the local session, on its own save root (the game code's). */
+    static final String ONLINE = "online";
 
     /** What the game window hands the game code (play_mode_gate.h): no mode named, Story, Sandbox. */
     static final int NATIVE_NONE = -1, NATIVE_STORY = 0, NATIVE_SANDBOX = 1;
+    /** recomp_play_mode_v1(3): Online (2 is the game code's "fresh sandbox", which this launcher does not ask for). */
+    static final int NATIVE_ONLINE = 3;
 
     /** The refusal codes of play_mode_gate.h (0 = the start may go on). */
     static final int GATE_OK = 0, GATE_NOT_IN_CODE = 1, GATE_OTHER_MODE = 2, GATE_ANSWER = 3;
@@ -38,7 +42,7 @@ final class PlayMode {
 
     /** True for a value of the extra the game window accepts; null (no extra) is accepted too: no mode named. */
     static boolean accepted(String extra) {
-        return extra == null || STORY.equals(extra) || SANDBOX.equals(extra);
+        return extra == null || STORY.equals(extra) || SANDBOX.equals(extra) || ONLINE.equals(extra);
     }
 
     /** The number the game window hands the game code for an accepted extra. */
@@ -46,6 +50,7 @@ final class PlayMode {
         if (extra == null) return NATIVE_NONE;
         if (STORY.equals(extra)) return NATIVE_STORY;
         if (SANDBOX.equals(extra)) return NATIVE_SANDBOX;
+        if (ONLINE.equals(extra)) return NATIVE_ONLINE;
         throw new IllegalArgumentException("not a play mode: " + extra);
     }
 
@@ -73,6 +78,15 @@ final class PlayMode {
     /** Sandbox cannot be chosen yet: no story save to start from (SB §1.2, "Seeding precondition"). */
     static final String SANDBOX_NEEDS_SAVE = "Play Story Mode until your first save. Sandbox starts from a copy of your story saves.";
     /** Sandbox cannot be chosen: the installed game code has no Sandbox (no recomp_play_mode_v1 export). */
+    /** Update 1 Online mode: the item and its one line (the owner's "Local \u00b7 no network"). */
+    static final String LABEL_ONLINE = "Online";
+    static final String ONLINE_LINE = "Local \u00b7 no network. Its own save: your story and Sandbox saves are never changed.";
+    static final String ONLINE_NEEDS_SAVE = "Play Story Mode until your first save. Online starts from a copy of your story saves, never changing them.";
+
+    /** The label of a mode word (Story Mode for anything else). */
+    static String label(String mode) {
+        return SANDBOX.equals(mode) ? LABEL_SANDBOX : ONLINE.equals(mode) ? LABEL_ONLINE : LABEL_STORY;
+    }
     static final String SANDBOX_NOT_IN_CODE = "This game code has no Sandbox. Install game code made for this version to use it.";
 
     /** The game window's first line for a refusal of the mode (its second line is the way back). */
@@ -91,6 +105,11 @@ final class PlayMode {
      * The launcher's line when the game is still running in one mode and the player chose the other. The game must
      * be closed first: a mode holds for the whole life of the game's process.
      */
+    static String switchWhileRunning(String runningMode, String chosenMode) {
+        return "The game is still open in " + label(runningMode) + ". Close it first, then choose " + label(chosenMode)
+                + ". It closes by itself 25 seconds after you leave it.";
+    }
+
     static String switchWhileRunning(String runningMode) {
         boolean sandbox = SANDBOX.equals(runningMode);
         return "The game is still open in " + (sandbox ? LABEL_SANDBOX : LABEL_STORY) + ". Close it first, then choose "
