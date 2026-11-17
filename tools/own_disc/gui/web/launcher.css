@@ -46,6 +46,9 @@ a { cursor: pointer; }
 /* ---- top right: page names (cap 59..70, 16 px; GAMES 777..840 bold black; SETTINGS ends at 1174; gaps 50) ---- */
 #nav { position: absolute; right: 114px; top: 57px; display: flex; gap: 50px; font: 16px/1 var(--sans); letter-spacing: 1.6px; }
 #nav a { color: var(--nav-off); text-decoration: none; }
+/* each tab reserves its bold width (a hidden bold copy of its name), so the active tab turning bold moves nothing */
+#nav a { display: inline-flex; flex-direction: column; align-items: center; }
+#nav a::after { content: attr(data-tab); text-transform: uppercase; font-weight: bold; height: 0; visibility: hidden; overflow: hidden; }
 #nav a.on { color: #000; font-weight: bold; }
 #nav a:hover { color: #000; }
 #avatar { position: absolute; left: 1221px; top: 47px; width: 36px; height: 36px; border-radius: 50%; background: #0b0d0c;
@@ -111,30 +114,28 @@ body:not(.tab-build) { background: #141518; }
 body:not(.tab-build) #backdrop, body:not(.tab-build) #home-lists, body:not(.tab-build) #side-rule,
 body:not(.tab-build) #side-more { display: none; }
 body.tab-build #section-list, body.tab-build #side-version { display: none; }
-body:not(.tab-build) #side { width: 316px; background: #1e1f22; }
-body:not(.tab-build) #side-mark { left: 40px; top: 50px; width: 45px; height: 42px; }                 /* tile 40..85 x 50..92 */
-#side-version { position: absolute; left: 95px; top: 52px; right: 16px; font: 12px/15px var(--sans); color: #a8a8a8; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+/* the sidebar keeps the home page's width, mark and links on every page (owner 2026-11-16: nothing may shift between pages); only its colour changes */
+body:not(.tab-build) #side { background: #1e1f22; }
+#side-version { position: absolute; left: 74px; top: 44px; right: 16px; font: 12px/15px var(--sans); color: #a8a8a8; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 #section-list { position: absolute; left: 0; right: 0; top: 175px; }
-#section-head { margin: 0 0 0 45px; font: bold 16px/1 var(--sans); color: #fff; }                   /* cap ~177 */
+#section-head { margin: 0 0 0 27px; font: bold 16px/1 var(--sans); color: #fff; }                   /* cap ~177 */
 #sections { margin-top: 32px; }
-#sections a { display: block; height: 34px; line-height: 34px; padding-left: 45px; font: 13px/34px var(--sans); color: #a7a7a7;
+#sections a { display: block; height: 34px; line-height: 34px; padding-left: 27px; font: 13px/34px var(--sans); color: #a7a7a7;
               position: relative; text-decoration: none; }                                          /* General centred at 232, pitch 34 */
 #sections a:hover { color: #fff; }
 #sections a.on { color: #fff; }
 #sections a.on::before { content: ""; position: absolute; left: 0; top: 0; width: 3px; height: 34px; background: #fbb017; }
 #sections a .tag { float: right; margin-right: 22px; font-size: 11px; color: #7d7d7d; }
 #sections a.on .tag, #sections a:hover .tag { color: #bdbdbd; }
-body:not(.tab-build) #nav { right: 131px; top: 69px; gap: 51px; font: bold 19px/1 var(--sans); letter-spacing: 1.1px; }   /* SETTINGS 1045..1149 */
+/* the tabs and the avatar keep the home page's size and place on every page (owner 2026-11-16); only their colours change */
 body:not(.tab-build) #nav a { color: #9b9b9b; }
 body:not(.tab-build) #nav a.on, body:not(.tab-build) #nav a:hover { color: #fff; font-weight: bold; }
-body:not(.tab-build) #avatar { left: auto; right: 38px; top: 55px; width: 44px; height: 44px; box-shadow: 0 0 0 2px #2c2d31; }
-body:not(.tab-build) #avatar img { width: 25px; height: 27px; }
+body:not(.tab-build) #avatar { box-shadow: 0 0 0 2px #2c2d31; }
 body:not(.tab-build) #chrome a { color: #a5a5a5; }
 body:not(.tab-build) #side-links .link { color: #6f7075; }
 body:not(.tab-build) #side-links .link:hover { color: #fff; }
-body:not(.tab-build) #side-links { left: 45px; bottom: 30px; }
 
-#page-rows { left: 316px; top: 120px; overflow: auto; }      /* below the header band: content never scrolls under it */
+#page-rows { left: var(--side-w); top: 120px; overflow: auto; }      /* below the header band: content never scrolls under it */
 #rows { position: absolute; left: 80px; top: 26px; width: 800px; padding-bottom: 40px; }       /* 146 px from the window top, as measured */
 .row { position: relative; display: flex; align-items: center; gap: 24px; padding: 21px 0; min-height: 95px; border-bottom: 1px solid #2b2c2f; }
 .row:last-child { border-bottom: 0; }

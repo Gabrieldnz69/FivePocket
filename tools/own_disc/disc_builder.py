@@ -78,6 +78,12 @@ BUNDLE_SCHEMA = 'gta5-code-bundle/1'
 BUNDLE_SCHEMA_2 = 'gta5-code-bundle/2'
 RUNTIME_ROLE = 'runtime-data'
 RUNTIME_PREFIX = 'runtime/'
+# Format 2, 1.2.0 (LEDGER 1b): the launcher's own files made from the player's discs (the ui stage: fonts, glyphs, pictures,
+# menu sounds). The app reads them in place from the imported bundle; it accepts a name under ui/ of a kind it reads
+# (.ttf, .png, .txt directly in ui/; .wav directly in ui/sounds/) up to 16 MiB, and so does this builder.
+UI_ROLE = 'ui-asset'
+UI_PREFIX = 'ui/'
+UI_MAX_BYTES = 16 << 20
 ENGINE_KEY_VERSION = 3          # bump when the meaning of a stage key changes (2: tree digests skip TREE_IGNORED; 3: the engine's and the host helper's own hashes are part of every key, and a tree's files are ordered by their names with '/', the same on every host)
 BLOCK = 1 << 20
 PRIVATE_DIR = 'local-analysis'  # the git-ignored folder of a checkout; the only place in one the builder writes to
@@ -916,6 +922,28 @@ def write_bundle(path: Path, manifest: dict, sources: dict[str, Path]) -> str:
     return seal
 
 
+def role_problem(name: str, role, second: bool, size: int | None = None) -> str | None:
+    """Why a component of this name and role may not be in a bundle of this format (None: it may). Shared by the profile check,
+    the writer's read-back and verify."""
+    if role not in KNOWN_ROLES and not (second and role in (RUNTIME_ROLE, UI_ROLE)):
+        return f'has the unknown role {role!r}'
+    if (role == RUNTIME_ROLE) != name.startswith(RUNTIME_PREFIX):
+        return f'runtime data, and nothing else, is named under {RUNTIME_PREFIX}'
+    if (role == UI_ROLE) != name.startswith(UI_PREFIX):
+        return f'launcher files (role {UI_ROLE}), and nothing else, are named under {UI_PREFIX}'
+    if role == UI_ROLE:
+        rest = name[len(UI_PREFIX):]
+        if rest.startswith('sounds/'):
+            shape = '/' not in rest[len('sounds/'):] and rest.endswith('.wav')
+        else:
+            shape = '/' not in rest and rest.endswith(('.ttf', '.png', '.txt'))
+        if not shape:
+            return f'is not a launcher file the app reads (.ttf, .png, .txt in {UI_PREFIX}; .wav in {UI_PREFIX}sounds/)'
+        if size is not None and size > UI_MAX_BYTES:
+            return f'is larger than the {UI_MAX_BYTES} bytes the app accepts for a launcher file'
+    return None
+
+
 def check_manifest(manifest, bad) -> dict[str, dict]:
     """Shape and meaning of manifest.json. Returns the components by name."""
     if not isinstance(manifest, dict) or manifest.get('schema') not in (BUNDLE_SCHEMA, BUNDLE_SCHEMA_2):
@@ -938,10 +966,9 @@ def check_manifest(manifest, bad) -> dict[str, dict]:
         name = c['name']
         if not ENTRY_NAME.fullmatch(name) or name == MANIFEST_NAME or name in by_name:
             raise bad(f'component name {name!r} is not allowed or is listed twice')
-        if c.get('role') not in KNOWN_ROLES and not (second and c.get('role') == RUNTIME_ROLE):
-            raise bad(f'component {name} has the unknown role {c.get("role")!r}')
-        if (c['role'] == RUNTIME_ROLE) != name.startswith(RUNTIME_PREFIX):
-            raise bad(f'component {name}: runtime data, and nothing else, is named under {RUNTIME_PREFIX}')
+        problem = role_problem(name, c.get('role'), second, c['size'])
+        if problem:
+            raise bad(f'component {name} {problem}')
         if c['role'] == 'title-xex' and c['sha256'] != game['executable_sha256']:
             raise bad('the bundled executable is not the one the manifest names')
         by_name[name] = c
@@ -1067,13 +1094,11 @@ def plan_bundle(profile: dict, ctx: Context) -> str:
     if not names or len(set(names)) != len(names):
         raise BuilderError('profile: bundle.components is empty or names a component twice', EXIT_USAGE)
     for c, component in zip(spec['components'], names):
-        known = c.get('role') in KNOWN_ROLES or (second and c.get('role') == RUNTIME_ROLE)
-        if not ENTRY_NAME.fullmatch(component) or component == MANIFEST_NAME or not known:
-            raise BuilderError(f'profile: bundle component {component!r} has a bad name or an unknown role '
-                               f'{c.get("role")!r}', EXIT_USAGE)
-        if (c['role'] == RUNTIME_ROLE) != component.startswith(RUNTIME_PREFIX):
-            raise BuilderError(f'profile: bundle component {component!r}: runtime data, and nothing else, is named '
-                               f'under {RUNTIME_PREFIX}', EXIT_USAGE)
+        if not ENTRY_NAME.fullmatch(component) or component == MANIFEST_NAME:
+            raise BuilderError(f'profile: bundle component {component!r} has a bad name', EXIT_USAGE)
+        problem = role_problem(component, c.get('role'), second)
+        if problem:
+            raise BuilderError(f'profile: bundle component {component!r} {problem}', EXIT_USAGE)
         if c.get('output') not in ctx.outputs.get(c.get('stage'), {}):
             raise BuilderError(f'profile: bundle component {component} names no output of a stage '
                                f'({c.get("stage")}:{c.get("output")})', EXIT_USAGE)

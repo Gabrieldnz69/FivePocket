@@ -992,6 +992,13 @@ class BundleFormat2(Base):
             ('a statement that is not texts', lambda b: b.update(provenance={'recipe': 1}), 'bundle.provenance must map names to texts'),
             ('a statement named tools', lambda b: b.update(provenance={'tools': 'x'}), 'bundle.provenance must map names to texts'),
             ('a tool that is no file', lambda b: b.update(portable_tools=['${repo}/gone.py']), 'bundle.portable_tools names no file'),
+            ('a launcher file outside ui/', lambda b: b['components'].append({'name': 'fonts/a.ttf', 'role': 'ui-asset', 'stage': 'catalog', 'output': 'out'}),
+             'are named under ui/'),
+            ('another role inside ui/', lambda b: b['components'][2].update(name='ui/pack.png'), 'are named under ui/'),
+            ('a launcher file the app does not read', lambda b: b['components'].append({'name': 'ui/tool.so', 'role': 'ui-asset', 'stage': 'catalog', 'output': 'out'}),
+             'not a launcher file the app reads'),
+            ('a folder inside ui/', lambda b: b['components'].append({'name': 'ui/more/a.png', 'role': 'ui-asset', 'stage': 'catalog', 'output': 'out'}),
+             'not a launcher file the app reads'),
         )
         for label, change, needle in cases:
             with self.subTest(label):
@@ -1000,6 +1007,16 @@ class BundleFormat2(Base):
                 self.assert_refused_before_any_work(db.EXIT_USAGE, needle)
                 self.fx.profile.clear()
                 self.fx.profile.update(saved)
+
+    def test_launcher_files_travel_as_ui_assets(self):
+        # 1.2.0: the ui stage's files go into the bundle the app imports (role ui-asset, names under ui/ and ui/sounds/)
+        bundle = self.second()
+        self.fx.profile['stages'].append(self.fx.command('ui', 'file', 'ui-stage/back.wav', ['${out:extract:xex}']))
+        bundle['components'].append({'name': 'ui/sounds/back.wav', 'role': 'ui-asset', 'stage': 'ui', 'output': 'out'})
+        code, text, _ = self.fx.run()
+        self.assertEqual(code, 0, text)
+        manifest = db.verify_bundle(self.fx.bundle())
+        self.assertIn(('ui/sounds/back.wav', 'ui-asset'), {(c['name'], c['role']) for c in manifest['components']})
 
     def test_runtime_data_is_refused_in_format_1(self):
         bundle = self.second()
@@ -1064,6 +1081,26 @@ class BundleFormat2(Base):
             with self.assertRaises(db.BuilderError) as cm:
                 db.verify_bundle(probe)
             self.assertIn('exactly one component of role decoded-image', str(cm.exception))
+        with self.subTest('launcher files'):
+            sources['decoded.image.bin'] = (self.fx.work / 'decode/image.bin').read_bytes()
+            sources['ui/glyph-a.png'] = b'png bytes'
+            with_ui = copy.deepcopy(good)
+            with_ui['components'].append({'name': 'ui/glyph-a.png', 'role': 'ui-asset', 'size': 9, 'stage': 'ui', 'provenance': 'built',
+                                          'sha256': hashlib.sha256(b'png bytes').hexdigest()})
+            with_ui['components'].sort(key=lambda c: c['name'])
+            write(with_ui)
+            db.verify_bundle(probe)                  # the control: a launcher file the app reads is accepted
+            for label, change, renamed, needle in (
+                    ('larger than the app takes', lambda m: component(m, 'ui/glyph-a.png').update(size=(16 << 20) + 1), None, 'is larger than'),
+                    ('in a folder of ui/', lambda m: component(m, 'ui/glyph-a.png').update(name='ui/more/glyph-a.png'),
+                     {'ui/glyph-a.png': 'ui/more/glyph-a.png'}, 'not a launcher file the app reads')):
+                manifest = copy.deepcopy(with_ui)
+                change(manifest)
+                write(manifest, renamed)
+                with self.assertRaises(db.BuilderError) as cm:
+                    db.verify_bundle(probe)
+                self.assertIn(needle, str(cm.exception), label)
+            del sources['ui/glyph-a.png']
         with self.subTest('format 1 with runtime data'):
             sources['decoded.image.bin'] = (self.fx.work / 'decode/image.bin').read_bytes()
             manifest = copy.deepcopy(good)

@@ -3,7 +3,7 @@
 It decides nothing the command-line builder does not: it finds the builder packages beside it, checks the player's two
 disc images the way the build identifies them, and plans and runs the SAME builder commands the guided command line
 runs (builder.py guided(): fetch when the compilers are missing, check, build, verify), each as its own builder process
-started the way the package's launcher starts it (builder.exe on Windows, ./builder on macOS and Linux). So a bundle or app made
+started the way the package's launcher starts it (builder.exe on Windows, ./builder on macOS). So a bundle or app made
 through the window is the command line's, byte for byte (tests/test_builder_core.py compares them).
 
 On top of the command line it keeps a session file (the chosen discs, editions, output folder and each step's state)
@@ -49,6 +49,11 @@ EDITION_LABELS = {
     'duo': 'FivePocket Duo (iPad, two screens)',
 }
 EDITION_ORDER = ('thor', 'fold', 'ios', 'duo')
+# 1.2.0: a Thor-line profile makes the one bundle both Android apps import, so its package offers both Android editions; when
+# both are chosen the build runs once (the second from the first's receipts) and each gets its copy in its own folder
+ANDROID_TWIN = {'thor': 'fold'}
+EDITION_DIRS = {'thor': 'Thor Edition', 'fold': 'Single screen', 'ios': 'iOS', 'duo': 'Duo'}
+APPLE_ELSEWHERE = 'built on a Mac with the macOS builder package'
 VERIFY_TARGET = '{bundle}'              # in a verify step's words: the bundle its edition's build step wrote
 STAGE_LINE = re.compile(r'^  ([a-z][a-z0-9-]{0,39})\s+(ran|skipped|FAILED|would run|NOT RUN|written)(?:\s|$)')
 BUNDLE_ID_LINE = re.compile(r'^Bundle identifier of your (\w+) app: (\S+)')
@@ -74,7 +79,7 @@ class Edition:
 
     @property
     def ident(self) -> str:
-        return f'{self.release_path}#{self.target or "default"}'
+        return f'{self.release_path}#{self.target or self.key}'
 
 
 def _read_json(path: Path):
@@ -95,6 +100,19 @@ def _key_of_profile(profile_id: str, rel: str) -> str:
     return 'thor' if 'thor' in text else 'fold'
 
 
+EDITION_FILE = 'edition.txt'   # one word at a package's root, written by stage_gui.py --edition: the edition its window opens as
+
+
+def _package_edition(root: Path) -> str | None:
+    """1.2.0: the edition a package says it is (thor | fold). The Single-Screen and Thor Edition downloads carry the same
+    Thor-line profile (one bundle for both apps), so the profile's name alone made both open as the Thor Edition."""
+    try:
+        word = (root / EDITION_FILE).read_text(encoding='utf-8').strip()
+    except OSError:
+        return None
+    return word if word in ('thor', 'fold') else None
+
+
 def _package_dirs(paths) -> list:
     seen, found = set(), []
     for p in paths:
@@ -112,7 +130,7 @@ def _package_dirs(paths) -> list:
 def discover_editions(paths) -> list:
     """Every edition the builder packages at these places make (a package folder, or a folder of package folders),
     available or not (with the reason); plus an unavailable iOS entry when no package here makes the iOS app."""
-    editions = []
+    editions, preferred = [], {}
     here = B.host_id()
     for root in _package_dirs(paths):
         release_path = root / 'release.json'
@@ -135,17 +153,21 @@ def discover_editions(paths) -> list:
             entries = [(t, t, rel) for t, rel in profiles.items()]
         else:
             pid, _, _ = _profile_facts(root, default) if default else ('', (), [])
-            entries.append((_key_of_profile(pid, default), None, default))
+            key = _key_of_profile(pid, default)
+            entries.append((key, None, default))
+            if key in ANDROID_TWIN:
+                entries.append((ANDROID_TWIN[key], None, default))
+            preferred[str(root)] = _package_edition(root) or key
             entries += [(t, t, rel) for t, rel in profiles.items() if rel != default]
         for key, target, rel in entries:
             _, stages, _ = _profile_facts(root, rel)
             kind = 'ipa' if key in B.APP_TARGETS else 'bundle'
             editions.append(Edition(key, EDITION_LABELS.get(key, key), kind, root, release_path, target, not reason, reason, stages))
-    if not any(e.kind == 'ipa' and e.available for e in editions):
-        editions.append(Edition('ios', EDITION_LABELS['ios'], 'ipa', None, None, None, False,
-                                'the iOS app (.ipa) is built on a Mac with Xcode, with the macOS builder package; '
-                                'it cannot be made on this computer'))
-    editions.sort(key=lambda e: (not e.available, EDITION_ORDER.index(e.key) if e.key in EDITION_ORDER else 9, str(e.root)))
+    for key in ('ios', 'duo'):                      # the Apple editions: listed, greyed, where no package here makes them
+        if not any(e.key == key and e.kind == 'ipa' and e.available for e in editions):
+            editions.append(Edition(key, EDITION_LABELS[key], 'ipa', None, None, None, False, APPLE_ELSEWHERE))
+    editions.sort(key=lambda e: (not e.available, e.key != preferred.get(str(e.root)),     # a package's own edition first
+                                 EDITION_ORDER.index(e.key) if e.key in EDITION_ORDER else 9, str(e.root)))
     return editions
 
 
@@ -376,13 +398,19 @@ def make_plan(editions, discs: dict, out, cache, licences_accepted: bool, fetche
             release = _read_json(e.release_path)
             words = ['fetch', '--accept-ndk-license'] + (['--accept-dxc-license'] if release.get('dxc') else [])
             steps.append(Step(f'fetch:{len(steps)}', 'fetch', 'Fetch the compilers', str(e.root), key, words))
+    twins = {}
+    for e in editions:
+        twins.setdefault((str(e.release_path), e.target), []).append(e)
     for e in editions:
         target = ['--' + e.target] if e.target else []
+        same = twins[(str(e.release_path), e.target)]
+        where = Path(out) / EDITION_DIRS.get(e.key, e.key) if len(same) > 1 else Path(out)
         base = dict(root=str(e.root), release=str(e.release_path), edition=e.ident, edition_label=e.label, edition_kind=e.kind)
-        steps.append(Step(f'check:{e.ident}', 'check', 'Check this computer', words=['check'] + target, **base))
+        if e is same[0]:                                # one check per package and target
+            steps.append(Step(f'check:{e.ident}', 'check', 'Check this computer', words=['check'] + target, **base))
         steps.append(Step(f'build:{e.ident}', 'build', 'Build', stages=list(e.stages),
                           words=['build'] + target + ['--play-disc', str(discs['play']), '--install-disc', str(discs['install']),
-                                                     '--out', str(out)], **base))
+                                                     '--out', str(where)], **base))
         if e.kind == 'bundle':
             steps.append(Step(f'verify:{e.ident}', 'verify', 'Verify the bundle', words=['verify', VERIFY_TARGET], **base))
     return steps
@@ -394,7 +422,7 @@ def builder_words(step: Step, cache) -> list:
 
 
 def launcher_command(root) -> list:
-    """how the package's launcher starts the front end: builder.exe (Windows), ./builder (macOS, Linux), else this checkout's
+    """how the package's launcher starts the front end: builder.exe (Windows), ./builder (macOS), else this checkout's
     builder.py with the package named in BUILDER_PACKAGE_ROOT (a development tree; the tests)"""
     root = Path(root)
     if os.name == 'nt' and (root / 'builder.exe').is_file():

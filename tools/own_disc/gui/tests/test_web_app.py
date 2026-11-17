@@ -51,7 +51,8 @@ class Window(t.Synthetic):
         s = wait(app, lambda s: s['compilers'] != 'checking')
         self.assertFalse(s['primary']['enabled'])
         self.assertIn('Disc 2 (Play)', s['ready_problems'][0])
-        self.assertEqual([e['short'] for e in s['editions'] if e['shown'] and e['available']], ['FivePocket Thor Edition'])
+        self.assertEqual([e['short'] for e in s['editions'] if e['shown'] and e['available']], ['FivePocket Thor Edition', 'FivePocket single screen'])
+        self.assertEqual([e['short'] for e in s['editions'] if e['chosen']], ['FivePocket Thor Edition'])
         self.answers = [str(self.fx.disc)]
         app.act('choose_disc', {'slot': 'play'})
         self.answers = [str(self.install)]

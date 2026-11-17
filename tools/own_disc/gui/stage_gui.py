@@ -2,6 +2,7 @@
 """Puts the builder window into a NEW copy of an unpacked builder package, for a test or a release candidate:
 
   stage_gui.py --package SRC --out NEW [--backdrops DIR] [--launcher EXE] [--logo FILE] [--logos DIR] [--button DIR]
+               [--edition thor|fold]
 
 - copies SRC (a folder holding release.json) to NEW, which must not exist yet; SRC is only read;
 - adds this checkout's tools/own_disc/gui (builder_core.py, web_app.py, web/; no tests, notes or launcher sources),
@@ -9,6 +10,8 @@
   FILE (.svg/.png/.webp) as web/logo.<ext>, which the window shows in its logo box instead of the drawn lockup, and
   the logo files of DIR (and its folders) into web/logos/, chosen by edition and backdrop (web_app.AppState.logos),
   and the button pictures of DIR (button-build|resume|cancel|blank.png|webp|svg) into web/;
+- with --edition, edition.txt at the root: the edition the window opens as (builder_core._package_edition; the
+  Single-Screen download carries the Thor-line profile, so without it the window would open as the Thor Edition);
 - writes gui-manifest.json at the root: every added file with its SHA-256 and size, and the hash of release.json, which
   stays as it was (the window is not part of the builder's inventory: load_release checks the listed files only).
 Nothing else is changed. Never point --out at a published package (they are kept exactly as published).
@@ -27,6 +30,7 @@ GUI_FILES = ('builder_core.py', 'web_app.py', 'README.md')
 WEB_TYPES = ('.html', '.css', '.js', '.svg')
 PICTURE_TYPES = ('.jpg', '.jpeg', '.png', '.webp')
 LAUNCHER_NAME = 'FivePocket Builder.exe'
+EDITION_FILE = 'edition.txt'
 
 
 class StageError(Exception):
@@ -42,12 +46,14 @@ def sha256(path: Path) -> str:
 
 
 def stage(package: Path, out: Path, backdrops: Path | None = None, launcher: Path | None = None, logo: Path | None = None,
-          logos: Path | None = None, button: Path | None = None) -> dict:
+          logos: Path | None = None, button: Path | None = None, edition: str | None = None) -> dict:
     package, out = Path(package), Path(out)
     if not (package / 'release.json').is_file():
         raise StageError(f'{package} holds no release.json: not an unpacked builder package')
     if out.exists():
         raise StageError(f'{out} exists: staging writes only into a new folder')
+    if edition not in (None, 'thor', 'fold'):
+        raise StageError(f'edition {edition!r}: a package opens as thor or fold')
     if out.resolve().is_relative_to(package.resolve()):
         raise StageError('the new folder may not lie inside the package it copies')
     release_before = sha256(package / 'release.json')
@@ -93,6 +99,11 @@ def stage(package: Path, out: Path, backdrops: Path | None = None, launcher: Pat
             raise StageError(f'{button} holds no button pictures (button-build.png, button-resume.png, ...)')
         for p in pictures:
             put(p, f'tools/own_disc/gui/web/{p.name}')
+    if edition is not None:
+        if (out / EDITION_FILE).exists():
+            raise StageError(f'{EDITION_FILE} is already in the package; refusing to replace it')
+        (out / EDITION_FILE).write_text(edition + '\n', encoding='utf-8', newline='\n')
+        added.append({'path': EDITION_FILE, 'sha256': sha256(out / EDITION_FILE), 'size': (out / EDITION_FILE).stat().st_size})
     if sha256(out / 'release.json') != release_before:
         raise StageError('release.json changed while staging')            # cannot happen; checked, not assumed
     manifest = {'schema': 'fivepocket-gui-stage/1', 'package': package.name, 'release_json_sha256': release_before,
@@ -110,9 +121,10 @@ def main(argv=None) -> int:
     ap.add_argument('--logo', type=Path)
     ap.add_argument('--logos', type=Path)
     ap.add_argument('--button', type=Path)
+    ap.add_argument('--edition', choices=('thor', 'fold'))
     a = ap.parse_args(argv)
     try:
-        manifest = stage(a.package, a.out, a.backdrops, a.launcher, a.logo, a.logos, a.button)
+        manifest = stage(a.package, a.out, a.backdrops, a.launcher, a.logo, a.logos, a.button, a.edition)
     except (StageError, OSError) as error:
         print(f'REFUSED: {error}')
         return 2

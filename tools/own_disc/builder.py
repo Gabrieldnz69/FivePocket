@@ -84,6 +84,8 @@ def inside(root, name):
 def load_release(path):
     r = read_json(path)
     root = path.resolve().parent
+    if host_id() == 'linux-arm64' and r.get('host') == 'linux-x86_64':
+        raise Refusal(LINUX_ON_ARM)
     if r.get('schema') != 'builder-release/1' or r.get('host') != host_id():
         raise Refusal(f'wrong or missing release for {host_id()}; obtain the matching builder download')
     if not isinstance(r.get('files'), list) or not r['files']:
@@ -111,6 +113,8 @@ def load_release(path):
     overlay_spec(r)
     if r['host'] == 'win32-arm64' and 'compiler_overlay' not in r:
         raise Refusal(NO_NATIVE_COMPILER)
+    if r['host'] == 'linux-arm64' and 'compiler_overlay' not in r:
+        raise Refusal(LINUX_ON_ARM)
     return r, root
 
 
@@ -120,6 +124,23 @@ def load_release(path):
 # NDK clang's own source and patches) and lays them over the verified NDK (overlay_spec, fetch_compiler_overlay).
 NO_NATIVE_COMPILER = ("this Windows on ARM release carries no native compiler programs (compiler_overlay): the NDK's x64 "
                       "compiler would run emulated and does not reproduce the release; obtain the Windows on ARM builder release")
+
+# Linux (2026-11-11): Google publishes the NDK's Linux compiler programs for x86_64 only (android-ndk-r27c-linux.zip). On an ARM64
+# Linux computer they would run under an emulator (qemu-user, FEX, box64, Rosetta in a Linux VM), whose compile-time floating point
+# is not shown to match (the Windows on ARM case above). A linux-arm64 release would need native programs (compiler_overlay) as
+# Windows on ARM has; none exists, so an ARM64 Linux computer is refused, and so is an x86_64 Python translated on an ARM64 kernel.
+LINUX_ON_ARM = ("Linux on ARM (aarch64) can't build a bit-identical release: Google's Android NDK for Linux is x86_64 only and "
+                "would run emulated; use an x86_64 PC")
+
+
+def linux_kernel_is_arm(cpuinfo='/proc/cpuinfo'):
+    """Linux: whether the kernel runs on an ARM CPU. The kernel writes /proc/cpuinfo, so an x86_64 Python translated on an
+    ARM64 kernel (qemu-user, Rosetta in a Linux VM) still reads the ARM field there (CPU implementer). An
+    emulator that rewrites the file as well (FEX) is not seen here."""
+    try:
+        return 'CPU implementer' in Path(cpuinfo).read_text(encoding='ascii', errors='replace')
+    except OSError:
+        return False
 
 
 def overlay_spec(release):
@@ -656,10 +677,17 @@ def emulated_x64_on_arm():
     return sys.platform == 'win32' and host_id() == 'win32-x86_64' and platform.machine().lower() == 'arm64'
 
 
+def emulated_x64_on_arm_linux():
+    # Linux: an x86_64 interpreter on an ARM64 kernel (see LINUX_ON_ARM); refused before anything runs, like Windows on ARM.
+    return sys.platform.startswith('linux') and host_id() == 'linux-x86_64' and linux_kernel_is_arm()
+
+
 def check(release, root, work, cache, target=None):
     if emulated_x64_on_arm():
         raise Refusal("Windows on ARM can't build a bit-identical release with the x64 Android toolchain (emulated floating point "
                       "differs); use an x64 PC")
+    if emulated_x64_on_arm_linux():
+        raise Refusal(LINUX_ON_ARM)
     check_paths(work, cache)
     estimate = release.get('estimates', {})
     need = estimate.get('min_free_bytes')
@@ -778,16 +806,18 @@ def how_to(release_path):
     switches = '--accept-ndk-license --accept-dxc-license' if dxc else '--accept-ndk-license'
     accept = 'each switch says you accept the one' if dxc else 'the switch says you accept them'
     out = default_work(Path()) / 'out'
+    # Linux: a terminal, and the launcher named by its path (the folder is not on PATH); Windows and macOS read as before
+    prompt, run = ('a terminal', './builder') if sys.platform.startswith('linux') else ('a command prompt', 'builder')
     return f'''This program makes the game's code bundle for the phone app from your own two disc images.
-Open a command prompt in this folder and run, in this order:
+Open {prompt} in this folder and run, in this order:
 
-  1. builder fetch {switches}
+  1. {run} fetch {switches}
        Once. Fetches the compiler (Android NDK, {compiler}).
        Read its terms first ({terms}); {accept}.{shaders}
-  2. builder build --play-disc PLAY-DISC.iso --install-disc INSTALL-DISC.iso
+  2. {run} build --play-disc PLAY-DISC.iso --install-disc INSTALL-DISC.iso
        Needs {space}. Takes from half an hour to a few hours.
        The bundle is written to {out} in this folder.
-  3. builder verify BUNDLE
+  3. {run} verify BUNDLE
        Checks a bundle and prints its seal: the app shows the same seal when it imports the bundle.
 
 {ios_text(targets)}A build that was interrupted goes on where it stopped when step 2 is run again.
@@ -863,6 +893,10 @@ def disc_role(path, games):
 
 
 def default_cache():
+    # Linux: the player's cache folder by the XDG rule ($XDG_CACHE_HOME when it is an absolute path, else ~/.cache)
+    xdg = os.environ.get('XDG_CACHE_HOME', '')
+    if sys.platform.startswith('linux') and 'LOCALAPPDATA' not in os.environ and os.path.isabs(xdg):
+        return Path(xdg) / 'own-disc-builder'
     return Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.cache'))) / 'own-disc-builder'
 
 

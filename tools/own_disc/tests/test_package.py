@@ -148,7 +148,7 @@ class Package(unittest.TestCase):
         self.assertFalse((self.cache / self.ndk['sha256'][:16]).exists())
 
     def test_12b_fetch_refuses_early_past_the_windows_path_limit(self):
-        # 2026-11-10 Windows on ARM: long paths off (the Windows default), the NDK's 176-character member under a 45-character cache
+        # 2026-11-10 Zenbook: long paths off (the Windows default), the NDK's 176-character member under a 45-character cache
         # failed mid-unpack with a raw Errno 2. With long paths off, a path over 259 characters is refused before unpacking.
         def archive_reaching(depth):        # an archive whose one file lands exactly `depth` characters deep once installed
             base = len(str(self.cache.resolve() / ('0' * 16))) + 1
@@ -185,7 +185,7 @@ class Package(unittest.TestCase):
             yield
 
     def test_13b_release_host_is_the_interpreters_cpu(self):
-        # 2026-11-10 Windows on ARM: the package's x64 Python reported the OS's ARM64 CPU, so the x64 release was refused.
+        # 2026-11-10 Zenbook (Windows on ARM): the package's x64 Python reported the OS's ARM64 CPU, so the x64 release was refused.
         profile = self.root / 'profile.json'; profile.write_bytes(b'{}')
         path = self.root / 'release.json'
         pin = self.native_program(self.root)
@@ -232,7 +232,7 @@ class Package(unittest.TestCase):
         return dict(path=name, replaces=replaces, sha256=db.sha256_file(program), size=len(data))
 
     def test_13d_an_overlay_release_builds_with_its_native_compiler_programs(self):
-        # 2026-11-11 Windows on ARM: the NDK publishes x64 compiler programs only, and emulated they fold floating point differently.
+        # 2026-11-11 Zenbook: the NDK publishes x64 compiler programs only, and emulated they fold floating point differently.
         # A release that lays native programs over the NDK hands the engine that folder: the declared program replaced,
         # every other file the verified NDK's, the NDK's own folder untouched, and no deeper (Windows' path limit).
         with zipfile.ZipFile(self.archive, 'w') as z:
@@ -304,6 +304,90 @@ class Package(unittest.TestCase):
         self.fetch()
         with self.assertRaisesRegex(b.Refusal, 'replaces bin/other.txt, which the compiler archive does not have'):
             b.fetch_compiler_overlay(loaded, root, self.cache)
+
+    def test_13g_linux_x86_64_takes_its_release_and_arm_linux_is_refused(self):
+        # 2026-11-11 (players: "a builder for Linux"): Google's Linux NDK is x86_64 only. An x86_64 PC loads the linux-x86_64
+        # release; an ARM64 Linux computer gets the reason, not a bare "wrong release", and no linux-arm64 release without native
+        # compiler programs is taken.
+        profile = self.root / 'profile.json'; profile.write_bytes(b'{}')
+        path = self.root / 'release.json'
+        def release(host):
+            path.write_text(json.dumps(dict(schema='builder-release/1', host=host, profile='profile.json',
+                                            files=[dict(path='profile.json', sha256=db.sha256_file(profile))])))
+            return path
+        with self.host('linux', 'linux-x86_64', 'x86_64'):
+            self.assertEqual(b.host_id(), 'linux-x86_64')
+            b.load_release(release('linux-x86_64'))
+            with self.assertRaisesRegex(b.Refusal, 'wrong or missing release for linux-x86_64'): b.load_release(release('win32-x86_64'))
+        with self.host('linux', 'linux-aarch64', 'aarch64'):
+            for host in ('linux-x86_64', 'linux-arm64'):
+                with self.subTest(host=host), self.assertRaisesRegex(b.Refusal, "Linux on ARM .aarch64. can't build a bit-identical release"):
+                    b.load_release(release(host))
+
+    def test_13h_an_x86_64_python_on_an_arm_linux_kernel_is_refused_at_check(self):
+        # qemu-user / Rosetta in a Linux VM: the interpreter says x86_64, the kernel's /proc/cpuinfo says ARM.
+        arm = self.root / 'cpuinfo-arm'; arm.write_text('processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd\nCPU implementer\t: 0x61\n')
+        x86 = self.root / 'cpuinfo-x86'; x86.write_text('processor\t: 0\nvendor_id\t: GenuineIntel\nflags\t\t: fpu sse2 avx2\n')
+        self.assertEqual([b.linux_kernel_is_arm(p) for p in (arm, x86, self.root / 'no-cpuinfo')], [True, False, False])
+        profile = self.root / 'profile.json'; profile.write_bytes(b'{}')
+        release = self.root / 'release.json'
+        release.write_text(json.dumps(dict(schema='builder-release/1', host='linux-x86_64', profile='profile.json',
+                                           files=[dict(path='profile.json', sha256=db.sha256_file(profile))])))
+        argv = ['--release', str(release), '--cache', str(self.cache), 'check', '--work', str(self.root / 'work')]
+        def run(cpuinfo):
+            real = b.linux_kernel_is_arm
+            with self.host('linux', 'linux-x86_64', 'x86_64'), mock.patch.object(b, 'linux_kernel_is_arm', lambda: real(cpuinfo)), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                code = b.main(argv)
+            return code, out.getvalue()
+        code, out = run(arm)
+        self.assertNotEqual(code, 0); self.assertIn("Linux on ARM (aarch64) can't build a bit-identical release", out)
+        self.assertFalse((self.root / 'work').exists()); self.assertFalse(self.cache.exists())
+        code, out = run(x86)
+        self.assertNotIn('Linux on ARM', out); self.assertIn('disk requirement unmeasured', out)     # the next guard
+
+    def test_13i_linux_players_cache_and_how_to(self):
+        # The cache follows the XDG rule on Linux only; the how-to names ./builder and a terminal on Linux, as before elsewhere.
+        home = str(Path.home() / '.cache' / 'own-disc-builder')
+        for plat, env, want in (('linux', {'XDG_CACHE_HOME': '/xdg'}, '/xdg/own-disc-builder'),
+                                ('linux', {'XDG_CACHE_HOME': 'relative'}, home), ('linux', {}, home),
+                                ('darwin', {'XDG_CACHE_HOME': '/xdg'}, home), ('win32', {'LOCALAPPDATA': '/lad', 'XDG_CACHE_HOME': '/xdg'}, '/lad/own-disc-builder')):
+            clean = {k: v for k, v in os.environ.items() if k not in ('XDG_CACHE_HOME', 'LOCALAPPDATA')}
+            with self.subTest(plat=plat, env=env), mock.patch.object(b.sys, 'platform', plat), mock.patch.dict(os.environ, dict(clean, **env), clear=True):
+                self.assertEqual(str(b.default_cache()), str(Path(want)))
+        fx, release = self.packaged()
+        for plat, said, unsaid in (('linux', ('Open a terminal in this folder', '  1. ./builder fetch', '  2. ./builder build', '  3. ./builder verify'), 'command prompt'),
+                                   ('win32', ('Open a command prompt in this folder', '  1. builder fetch', '  3. builder verify'), './builder'),
+                                   ('darwin', ('Open a command prompt in this folder', '  1. builder fetch'), './builder')):
+            with self.subTest(plat=plat), mock.patch.object(b.sys, 'platform', plat):
+                text = b.how_to(release)
+            for part in said:
+                self.assertIn(part, text)
+            self.assertNotIn(unsaid, text)
+
+    def test_13j_the_linux_launcher_runs_the_front_end_with_the_package_s_folders(self):
+        # tools/own_disc/linux/builder: the package root, its host programs (the profiles' ${hosttools}), UTF-8 mode, no user
+        # site packages, the 3.9 shim, every word passed on; and a clear refusal without a usable python3.
+        package = self.root / 'pkg'; (package / 'tools' / 'own_disc').mkdir(parents=True)
+        launcher = package / 'builder'; shutil.copy2(SRC / 'tools/own_disc/linux/builder', launcher)
+        fake = self.root / 'fake-python'
+        fake.write_text('#!/bin/sh\n[ "$1" = -c ] && exit 0\nshift\necho "SCRIPT=$1"; shift\necho "ARGS=$*"\n'
+                        'for v in BUILDER_PACKAGE_ROOT BUILDER_HOST_TOOLS PYTHONPATH PYTHONUTF8 PYTHONNOUSERSITE PYTHONHOME; do eval "echo $v=\\${$v-unset}"; done\n')
+        fake.chmod(0o755)
+        env = dict(os.environ, BUILDER_PYTHON=str(fake), PYTHONHOME='/elsewhere')
+        done = subprocess.run(['/bin/sh', str(launcher), 'build', '--play-disc', 'a b.iso'], env=env, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        real = package.resolve()
+        self.assertEqual(dict(line.split('=', 1) for line in done.stdout.splitlines()),
+                         {'SCRIPT': f'{real}/tools/own_disc/builder.py', 'ARGS': 'build --play-disc a b.iso',
+                          'BUILDER_PACKAGE_ROOT': str(real), 'BUILDER_HOST_TOOLS': f'{real}/host-tools',
+                          'PYTHONPATH': f'{real}/tools/own_disc/macos/python-compat', 'PYTHONUTF8': '1', 'PYTHONNOUSERSITE': '1',
+                          'PYTHONHOME': 'unset'})
+        old = self.root / 'old-python'                       # a python3 older than 3.9: the launcher's own version test, run as 3.8
+        old.write_text(f'#!/bin/sh\n[ "$1" = -c ] && exec "{sys.executable}" -c "import sys; sys.version_info = (3, 8, 0)\n$2"\nexit 0\n')
+        old.chmod(0o755)
+        done = subprocess.run(['/bin/sh', str(launcher)], env=dict(env, BUILDER_PYTHON=str(old)), capture_output=True, text=True)
+        self.assertEqual(done.returncode, 2); self.assertIn('REFUSED: the builder needs Python 3.9 or newer', done.stderr)
 
     def test_14_windows_path_refusal(self):
         with mock.patch.object(b.sys, 'platform', 'win32'):
