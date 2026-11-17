@@ -24,8 +24,8 @@ android {
         // Stays 1 on purpose: an app that is not debuggable cannot be downgraded without an uninstall, and an
         // uninstall removes the game data and the saves. With the same version code the debug build can still be
         // installed over the ship build (and the other way round) with "adb install -r", data kept.
-        versionCode = 3
-        versionName = "1.1.5"
+        versionCode = 4
+        versionName = "1.2.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -146,7 +146,10 @@ tasks.matching { it.name == "prePublicBuild" }.configureEach {
         "owner/trainer-open.m4a" to "ac27aa7487f92bcaeb7bf52de920c724ccf51cbeaf8ccc13bf4b84ecffd3eb16",
         // the owner's approved alert art (2026-11-06): his capture with the button glyph blacked out, and the game-layout restart notice
         "owner/alert-screen.png" to "1b801a2cb4d47aab70315f36234adb07401042b28ee09d990b6d064d431e170d",
-        "side-menu/alert-restart.png" to "b02d4330cd4ea0fab4fdc7bf118fcab5eb08cf8bf6578b1a8c25c73384c67a1c")
+        "side-menu/alert-restart.png" to "b02d4330cd4ea0fab4fdc7bf118fcab5eb08cf8bf6578b1a8c25c73384c67a1c",
+        // 1.2.0 (owner): his own art for the Verify Game Data and Import Game Discs tiles (update-1/menu-revamp/owner-art, 704 px)
+        "ui-own/tile-verify-data.png" to "438f02666d59af51e0143505b7c14b5f92f57320a6159a1d0b6e058bacc71bf1",
+        "ui-own/tile-import-discs.png" to "d8a86a9ed4b82c58c1b68db2652d659cc8cf4757126268289bcc827495187cfc")
     fun sha256(f: File): String = MessageDigest.getInstance("SHA-256").digest(f.readBytes()).joinToString("") { b -> "%02x".format(b) }
     // The owner's builds keep the game's alert art in the debug source set (src/debug/assets/owner/alert-screen.png, 2026-10-25):
     // no asset folder of the public variant may lie there.
@@ -162,7 +165,7 @@ tasks.matching { it.name == "prePublicBuild" }.configureEach {
         if (fromDebug.isNotEmpty()) throw GradleException("The public app cannot take assets from the debug source set (game art): " + fromDebug)
         val expected = setOf("public/config.json", "public/start-request.bin") + approvedMedia.keys
         val found = source.walkTopDown().filter { it.isFile }.map { it.relativeTo(source).invariantSeparatorsPath }.toSet()
-        if (found != expected) throw GradleException("The public app needs exactly its two metadata assets and the four approved art and sound files.")
+        if (found != expected) throw GradleException("The public app needs exactly its two metadata assets and the approved art and sound files.")
         val shared = main.walkTopDown().filter { it.isFile }.map { it.relativeTo(main).invariantSeparatorsPath }.toSet()
         // 2026-11-05 (owner-approved): the GPLv3 text the app itself is under (the repository's COPYING, byte for byte).
         if (shared != setOf("licenses/AMD-FidelityFX-FSR1-MIT.txt", "fonts/NunitoSans-VF.ttf", "licenses/NunitoSans-OFL.txt",

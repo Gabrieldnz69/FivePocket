@@ -14,7 +14,7 @@ final class TouchLatency {
     private int n, over;   // the ages kept; moves past the buffer are counted, not kept
 
     void add(long ageMs) {
-        if (n < ages.length) ages[n++] = (int) Math.max(0, Math.min(ageMs, 10_000));
+        if (n < ages.length) ages[n++] = (int) Math.max(0, Math.min(ageMs, 60_000_000));
         else ++over;
     }
 
@@ -26,6 +26,12 @@ final class TouchLatency {
         final String s = "moves=" + (n + over) + " p50=" + a[rank(n, 50)] + " p95=" + a[rank(n, 95)] + " max=" + a[n - 1];
         n = 0; over = 0;
         return s;
+    }
+
+    /** jank-1117: the same summary with other names: "<count>=N p50=A p95=B max=C" + unit (the handler / draw times, in microseconds). */
+    String take(String count, String unit) {
+        final String s = take();
+        return s == null ? null : s.replaceFirst("^moves=", count + "=").replace(" p50=", " p50_" + unit + "=").replace(" p95=", " p95_" + unit + "=").replace(" max=", " max_" + unit + "=");
     }
 
     /** The nearest-rank index of percentile p in n sorted values. */

@@ -33,7 +33,7 @@ final class QuickStripView extends View {
     }};
     QuickStripView(Context c,ThorMenus menus){
         super(c);this.menus=menus;setClickable(false);setFocusable(false);setWillNotDraw(false);
-        text.setTypeface(UiKit.Faces.get(c).regular);text.setTextAlign(Paint.Align.CENTER);
+        text.setTypeface(UiKit.Faces.get(c).of(Scene.REGULAR));text.setTextAlign(Paint.Align.CENTER);
     }
     private void relayout(){
         final List<QuickStrip.Slot> next=shown?strip.layout(menus.rows,getWidth(),getHeight()):new ArrayList<>();

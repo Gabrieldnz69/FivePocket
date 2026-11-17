@@ -34,7 +34,7 @@ final class QolTouch implements View.OnTouchListener {
     private QolGesture.State lastState=QolGesture.State.IDLE;private MapTouch.State lastMap=MapTouch.State.IDLE;private int lastRx,lastRy;
     // touch-controls (SPEC: local-analysis/touch-controls-spec/SPEC.md): the on-screen pad, its view, the context poll
     final TouchPad pad=new TouchPad();private TouchPadView view;private static Runnable devicesChanged;
-    private final Runnable poll=this::poll;private int polls;private int lastWord=Integer.MIN_VALUE,lastPhysical;
+    private final Runnable poll=this::poll;private int polls;private int lastWord=Integer.MIN_VALUE,lastPhysical;private int[] lastPhysicalState;
     /** SPEC 3.14: PrivateTraceActivity's handler of the pad's app buttons ("qsave", "trainer"), run on the main thread after the touch. */
     static volatile java.util.function.Consumer<String> appActions;
     private String app(){ // (Update 1 haptics: returns the app action it handed on, or null)
@@ -228,8 +228,8 @@ final class QolTouch implements View.OnTouchListener {
         final long now=SystemClock.uptimeMillis();
         w.g.pad(now,buttons);w.schedule();w.log("pad");
         final int[] physical={buttons,leftTrigger,rightTrigger,leftX,leftY,rightX,rightY};
-        final boolean fresh=TouchPad.freshPhysical(physical,w.lastPhysical);
-        w.lastPhysical=buttons;w.block(now);
+        final boolean fresh=TouchPad.freshPhysical(physical,w.lastPhysicalState);
+        w.lastPhysical=buttons;w.lastPhysicalState=physical;w.block(now); // (touch-120: edges, not levels - TouchPad.freshPhysical)
         if(fresh)aimInputCall(aimInput.controller(),"controller"); // (OWNER ORDER 2026-11-10: a real controller press won: the game's targeting mode)
         if(fresh && !w.pad.hidden()){w.pad.physical(now,true);if(w.pad.hidden()){Log.i(TAG,"TOUCH_PAD hidden by the controller (physical input)");w.zones();if(w.view!=null)w.view.postInvalidate();}}
         final float[] turn=w.pad.takeCameraTurn(); // (Update 1 touch item 4: what the swipe built up, to the library at once)
@@ -251,7 +251,17 @@ final class QolTouch implements View.OnTouchListener {
     static final boolean AB_TEST=false;
     private final TouchLatency moveAges=new TouchLatency();
     private int gestures;private boolean unbuffered;
+    // jank-1117: per gesture, the handler's own time (this method, us) and the overlay's draw time (TouchPadView.onDraw, us), and how many
+    // moves needed no redraw - one TOUCH_PERF line at the gesture's end beside TOUCH_LAT, for the Fold check of the "jank" report.
+    private final TouchLatency handlerUs=new TouchLatency();
+    static final TouchLatency drawUs=new TouchLatency();
+    private int gestureMoves;
     @Override public boolean onTouch(View view,MotionEvent e){
+        final long started=System.nanoTime();
+        try{return route(view,e);}
+        finally{handlerUs.add((System.nanoTime()-started)/1000);}
+    }
+    private boolean route(View view,MotionEvent e){
         if(routeMenu(e))return true; // side-menu
         final long t=e.getEventTime();block(SystemClock.uptimeMillis());
         if(e.getActionMasked()!=MotionEvent.ACTION_DOWN && e.getActionMasked()!=MotionEvent.ACTION_CANCEL){ // (the stale-finger watchdog)
@@ -310,14 +320,18 @@ final class QolTouch implements View.OnTouchListener {
         app(); // (item 2, Fold check 2 2026-11-08: a double tap's next weapon is set on the second finger's LIFT; hand it on in this event,
                //  not at the next touch - a down already took its action above, so nothing leaves twice)
         block(SystemClock.uptimeMillis());
+        final long keyBeforeAfter=drawnKey;
         after();
-        if(this.view!=null)this.view.invalidate(); // (2026-11-11 MORE row fix: the overlay field, not the touched content FrameLayout the
+        if(this.view!=null && e.getActionMasked()!=MotionEvent.ACTION_MOVE){this.view.invalidate();drawnKey=pad.drawKey(SystemClock.uptimeMillis());} // (2026-11-11 MORE row fix: the overlay field, not the touched content FrameLayout the
                                                    //  parameter names; hardware drawing reuses a child's display list, so the row never drew)
         if(padDown!=null)Log.i(TAG,"TOUCH_PAD down "+padDown+" event_to_publish_ms="+(SystemClock.uptimeMillis()-t)+" (touch input)"); // (latency: published by after())
         final int act=e.getActionMasked();
-        if(act==MotionEvent.ACTION_MOVE)moveAges.add(SystemClock.uptimeMillis()-t); // (touch optimizations: the move's age at the publish)
+        if(act==MotionEvent.ACTION_MOVE){moveAges.add(SystemClock.uptimeMillis()-t);++gestureMoves;if(drawnKey==keyBeforeAfter)++skippedMoves;} // (touch optimizations: the move's age at the publish)
         else if(act==MotionEvent.ACTION_UP || act==MotionEvent.ACTION_CANCEL){final String lat=moveAges.take();
-            if(lat!=null)Log.i(TAG,"TOUCH_LAT "+lat+" unbuffered="+(unbuffered?1:0)+" (touch input)");}
+            if(lat!=null)Log.i(TAG,"TOUCH_LAT "+lat+" unbuffered="+(unbuffered?1:0)+" (touch input)");
+            final String hs=handlerUs.take("events","us"),ds=drawUs.take("draws","us");
+            Log.i(TAG,"TOUCH_PERF handler "+hs+" | overlay "+(ds==null?"draws=0":ds)+" | moves="+gestureMoves+" redraw_skipped="+skippedMoves+" (touch input)");
+            gestureMoves=0;skippedMoves=0;}
         return true;
     }
     /** A stick's lift (the stuck-stick report: every stick touch now has a down and an up line). */
@@ -336,8 +350,19 @@ final class QolTouch implements View.OnTouchListener {
     }
     private char lastLatchLogged;
     private void tick(){scheduled=QolGesture.NONE;g.tick(SystemClock.uptimeMillis());block(SystemClock.uptimeMillis());after();if(view!=null)view.invalidate();}
-    private void after(){schedule();log("touch");logLatch();changed();
+    private void after(){schedule();log("touch");logLatch();changed();redrawIfChanged();
         if(!reticleOn && reticleWanted()){reticleOn=true;handler.post(reticleTick);}} // (2026-11-09: auto-fire reads the reticle while aiming)
+    // jank-1117 (owner on the Fold test app: "the left stick doesn't always disappear"): every path that lets the fingers go without a touch
+    // event - the side menu opened by Back (menuEvents) or by its edge strip (routeMenu returns before onTouch's redraw), focus loss and a
+    // controller change (cancelAll) - released the stick but nothing redrew the overlay, so the last frame (the stick under the thumb) stayed
+    // on screen until an unrelated redraw. after() runs on all of them: the overlay redraws whenever what the fingers draw changed.
+    private long drawnKey=Long.MIN_VALUE;int skippedMoves;
+    private void redrawIfChanged(){
+        final long k=pad.drawKey(SystemClock.uptimeMillis());
+        if(k==drawnKey || view==null)return;
+        drawnKey=k;
+        if(android.os.Looper.myLooper()==android.os.Looper.getMainLooper())view.invalidate();else view.postInvalidate();
+    }
     private void schedule(){
         final long due=Math.min(g.due(),pad.due(SystemClock.uptimeMillis()));
         if(due==scheduled)return;

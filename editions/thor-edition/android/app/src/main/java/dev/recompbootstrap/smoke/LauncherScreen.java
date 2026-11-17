@@ -6,6 +6,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.hardware.input.InputManager;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.InputDevice;
 import android.view.View;
 import java.io.File;
@@ -147,7 +148,42 @@ final class LauncherScreen implements Screen, UiKit.Listener {
 
     @Override public void onHidden() {
         watchControllers(false);
+        watchLibrary(false);
         settings.hidden();
+    }
+
+    /** The app is no longer visible: no library watch until it comes back (onAppBack looks again anyway). */
+    @Override public void onAppLeft() {
+        watchLibrary(false);
+    }
+
+    // qol21 (owner 2026-11-08: Online missing after the live library changed while the menu stayed in front): while this screen is in
+    // front, the live game code's stamp (size, modification time) is compared every LIBRARY_WATCH_MS with the one detect() looked at;
+    // a change means a new look, so the Play tab follows the library that is live now (Online needs SandboxReady.ONLINE_EXPORT).
+    static final long LIBRARY_WATCH_MS = 2000;
+    static final String TAG = "RecompLauncher";
+    private LibraryStamp looked;
+    private boolean watchingLibrary;
+    private final Runnable libraryWatch = new Runnable() {
+        @Override public void run() {
+            if (!watchingLibrary) return;
+            if (!LibraryStamp.of(liveLibrary()).same(looked)) {
+                Log.i(TAG, "LAUNCHER_LOOK the live game code changed: looking again");
+                detect();
+            }
+            view.postDelayed(this, LIBRARY_WATCH_MS);
+        }
+    };
+
+    private void watchLibrary(boolean on) {
+        if (on == watchingLibrary) return;
+        watchingLibrary = on;
+        view.removeCallbacks(libraryWatch);
+        if (on) view.postDelayed(libraryWatch, LIBRARY_WATCH_MS);
+    }
+
+    private File liveLibrary() {
+        return new File(new File(host.filesDir(), InstallState.PRIVATE_TRACE), InstallState.LIVE_LIBRARY);
     }
 
     /** The activity came back to the front (after the game or the controller check): look at the files again. */
@@ -163,6 +199,7 @@ final class LauncherScreen implements Screen, UiKit.Listener {
         spendSafeStart();   // Update 1 (Mods page)
         entered(nav.tab());
         render();
+        watchLibrary(true);   // (qol21: shown or back in front - the library watch runs while this screen is)
     }
 
     /** The later look at a start that was left too soon to judge. Only while this screen is still in front: the game window is then not. */
@@ -226,6 +263,7 @@ final class LauncherScreen implements Screen, UiKit.Listener {
     private void detect() {
         final int ticket = ++detection;
         final File filesDir = host.filesDir();
+        looked = LibraryStamp.of(liveLibrary());   // (qol21: the library this look reads; libraryWatch compares against it)
         final String apkPath = host.activity().getApplicationInfo().sourceDir;
         final InstallState[] found = new InstallState[1];
         final ShipReady[] ship = new ShipReady[1];
@@ -258,6 +296,11 @@ final class LauncherScreen implements Screen, UiKit.Listener {
         });
     }
 
+    /** What the launcher's graphics check found (UNKNOWN until it answered). */
+    GpuSupport.Verdict gpu() {
+        return menu == null ? GpuSupport.UNKNOWN : menu.gpu();
+    }
+
     /** The text measure of the view that paints the frame. */
     Scene.Measure measure() {
         return view;
@@ -274,7 +317,12 @@ final class LauncherScreen implements Screen, UiKit.Listener {
         return true;   // this is the bottom screen: B never leaves the app
     }
 
+    /** Update 1 Online mode: the return word from the game window (LaunchReturn.EXTRA), kept until a column with Online is
+     *  drawn or the player moves first. Set on the main thread by the menu activity (onCreate / onNewIntent). */
+    static volatile String returnTo;
+
     private void handle(int command, boolean repeat) {
+        returnTo = null;   // the player moved first: their place wins
         int tab = nav.tab();
         int route = ShellNav.route(tab, command, settings.capturing(), settings.ready(), menu.asking());
         if (route == ShellNav.TO_SETTINGS_MODEL) {
@@ -286,7 +334,18 @@ final class LauncherScreen implements Screen, UiKit.Listener {
             render();
             return;
         }
+        // M6a: the landing's tiles stand in a row - LEFT / RIGHT walk them (UP / DOWN still do), stopping at the row's ends
+        if (tab == ShellNav.PLAY && landing() && nav.level() != ShellNav.STRIP && (command == NavInput.LEFT || command == NavInput.RIGHT)) {
+            int column = nav.column(ShellNav.PLAY), last = menu.playItems() - 1;
+            if (command == NavInput.LEFT ? column <= 0 : column >= last) return;
+            command = command == NavInput.LEFT ? NavInput.UP : NavInput.DOWN;
+        }
         carryOut(tab, nav.command(command, repeat, enterable(tab), settings.dirty()), command, repeat);
+    }
+
+    /** The Play tab is drawn as the landing (M6a) unless settings/menu-classic keeps the console frame. */
+    private boolean landing() {
+        return nav.tab() == ShellNav.PLAY && classicMenus != null && !classicMenus;
     }
 
     /** True when the highlight can go from the tab's highlighted column item into its pane. */
@@ -351,6 +410,8 @@ final class LauncherScreen implements Screen, UiKit.Listener {
             about.copyCaptures();   // "Copy To Pictures"; does nothing when there is nothing to copy (no prompt then)
         } else if (tab == ShellNav.ABOUT && nav.column(ShellNav.ABOUT) == ShellPages.ABOUT_DIAGNOSTICS) {
             about.copyDiagnostics();   // Update 1: the report to the clipboard + the share sheet (Diagnostics)
+        } else if (tab == ShellNav.ABOUT && nav.column(ShellNav.ABOUT) == ShellPages.ABOUT_GPU_TRY) {
+            about.toggleGpuTryAnyway();   // v1302: the opt-in switch for a GPU below the game's minimum (GpuSupport)
         }
     }
 
@@ -366,6 +427,8 @@ final class LauncherScreen implements Screen, UiKit.Listener {
         if (tab == ShellNav.SETTINGS && settings.capturing()) return;
         if (base == MenuLayout.HIT_TAB) {
             carryOut(tab, nav.tapTab(index, settings.dirty()), NavInput.NONE, false);
+        } else if (base == MenuLayout.HIT_COLUMN && landing()) {
+            carryOut(tab, nav.tapTile(index), NavInput.NONE, false);   // (2026-11-08: a landing tile starts at once, from the tab bar too)
         } else if (base == MenuLayout.HIT_COLUMN) {
             // The highlighted item: as A. Any other: the highlight only moves there.
             carryOut(tab, nav.tapColumn(index, enterable(tab)), NavInput.NONE, false);
@@ -388,6 +451,10 @@ final class LauncherScreen implements Screen, UiKit.Listener {
                 break;
             case RECHECK:
                 detect();   // "Check again": the answer arrives through setInstall, as every detection's does
+                break;
+            case OPEN_VERIFY:
+                // 1.2.0 "Verify Game Data": the two-disc page, which looks at every file when it opens (as Set Up Game's Copy Disc Files)
+                host.push(new SetupDiscScreen());
                 break;
             case OPEN_GAME_FILES_SETUP:
                 // "Set Up Game Files": the two-disc setup page, in the menu's frame (SetupScreen hands every call to
@@ -456,6 +523,14 @@ final class LauncherScreen implements Screen, UiKit.Listener {
         }
         TimeZone zone = TimeZone.getDefault();
         nav.setColumnCount(ShellNav.PLAY, menu.playItems());   // Update 1: Story Mode and Sandbox, or the one first item
+        String back = returnTo;   // Update 1 Online mode: back from the Online leave -> the Play tab on the Online tile (LaunchReturn)
+        if (back != null) {
+            int column = LaunchReturn.column(menu.playOrder(), back);
+            if (column >= 0) {
+                nav.show(ShellNav.PLAY, column);
+                returnTo = null;
+            }
+        }
         MenuScenes.Page page = ShellPages.frame(nav, menu, controller, zone);
         switch (nav.tab()) {
             case ShellNav.PLAY:
@@ -473,8 +548,17 @@ final class LauncherScreen implements Screen, UiKit.Listener {
         }
         // The build that is handed out: no sentence names the owner's phone, the kind of build or an install kit.
         if (menu.selfInstalling()) ShipWords.page(page);
-        view.show(MenuScenes.build(page, view));
+        // Menu revamp M1/M5: the list tabs in the game's own Enhanced Settings frame; M6a: the Play tab as the Enhanced landing;
+        // settings/menu-classic keeps the console frame everywhere.
+        if (classicMenus == null) classicMenus = new File(host.filesDir(), EnhancedScenes.CLASSIC_SWITCH).exists();
+        boolean enhanced = nav.tab() != ShellNav.PLAY && !classicMenus && page.alert == null;
+        if (landing() && page.alert == null) view.show(LandingScenes.build(page, view));
+        else if (enhanced) view.show(EnhancedScenes.build(page, view));
+        else view.show(MenuScenes.build(page, view));
     }
+
+    /** Read once (the first frame): whether settings/menu-classic asks for the console frame on every tab. */
+    private Boolean classicMenus;
 
     /** The name of the first real gamepad or joystick Android reports, or null. */
     private static String controllerName() {

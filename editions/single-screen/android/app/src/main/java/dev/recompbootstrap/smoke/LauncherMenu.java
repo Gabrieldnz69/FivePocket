@@ -30,9 +30,24 @@ final class LauncherMenu {
     static final int SANDBOX = 4;
     /** Update 1 Online mode (owner 2026-11-07): the Play tab's third item, only while onlineOffered() (the game code has it). */
     static final int ONLINE = 5;
+    /**
+     * 1.2.0 (owner: the iOS setup tiles he likes): the Play tab's last two items in the handed-out build, as on iOS (ios_play_mode_tile.h
+     * PlayColumn): "Verify Game Data" opens the two-disc page, which looks at every file again; "Import Game Discs" opens the setup page
+     * (game code and both discs). Same pages and checks as before; only where they are reached from is new.
+     */
+    static final int VERIFY = 6, IMPORT = 7;
+    /** 1.2.0 (owner: padlocks before setup): Story Mode shown locked beside Set Up Game while the game is not set up (PRIMARY is Set Up Game then). */
+    static final int STORY_LOCKED = 8;
+    static final String LOCKED_LINE = "Set up the game to unlock.";
+    static final String LABEL_VERIFY = "Verify Game Data", LABEL_IMPORT = "Import Game Discs";
+    static final String VERIFY_LINE = "Looks at every game file on this device again, disc by disc, and shows what is in place.";
+    static final String IMPORT_LINE = "Copies the game's files from your own disc images (Disc 1 and Disc 2) into this app, and installs the game code"
+            + " made on your computer. The images are read only.";
 
     /** What the screen must do after a confirm or a tap. */
     enum Action { NONE, PLAY, RECHECK, OPEN_SETTINGS, OPEN_CONTROLLER_CHECK, OPEN_ABOUT,
+        /** 1.2.0: "Verify Game Data": the two-disc page itself (it looks at every file when it opens). */
+        OPEN_VERIFY,
         /** The build that is handed out: open the two-disc setup page (game data from the player's discs is missing). */
         OPEN_GAME_FILES_SETUP,
         /** The build that is handed out: open the app's first screen, which checks and repairs the app's own pieces. */
@@ -175,11 +190,30 @@ final class LauncherMenu {
 
     /** The Play tab's column, top to bottom: the first item, then Sandbox and Online while each is offered. */
     int[] playOrder() {
-        boolean s = sandboxOffered(), o = onlineOffered();
-        if (s && o) return new int[] {PRIMARY, SANDBOX, ONLINE};
-        if (s) return new int[] {PRIMARY, SANDBOX};
-        if (o) return new int[] {PRIMARY, ONLINE};
-        return new int[] {PRIMARY};
+        if (lockedShown()) return new int[] {PRIMARY, STORY_LOCKED, SANDBOX, ONLINE, VERIFY, IMPORT};
+        boolean s = sandboxOffered(), o = onlineOffered(), v = setupTilesOffered();
+        int[] order = new int[1 + (s ? 1 : 0) + (o ? 1 : 0) + (v ? 2 : 0)];
+        int n = 0;
+        order[n++] = PRIMARY;
+        if (s) order[n++] = SANDBOX;
+        if (o) order[n++] = ONLINE;
+        if (v) { order[n++] = VERIFY; order[n++] = IMPORT; }
+        return order;
+    }
+
+    /** 1.2.0 (owner): while the handed-out build's game is not set up, the modes are shown locked (a padlock; they cannot be chosen). */
+    boolean lockedShown() {
+        return setupTilesOffered() && !install.ready();
+    }
+
+    /** The item is shown with a padlock: a mode while the game is not set up. */
+    boolean locked(int item) {
+        return lockedShown() && (item == STORY_LOCKED || item == SANDBOX || item == ONLINE);
+    }
+
+    /** 1.2.0: Verify Game Data and Import Game Discs, in the handed-out build once the first look has finished. */
+    boolean setupTilesOffered() {
+        return publicApp && selfInstalling && install != null;
     }
 
     /** How many items the Play tab's column has (playOrder's length: 1 to 3). */
@@ -290,13 +324,22 @@ final class LauncherMenu {
                 return PlayMode.LABEL_SANDBOX;
             case ONLINE:
                 return PlayMode.LABEL_ONLINE;
+            case STORY_LOCKED:
+                return PlayMode.LABEL_STORY;
+            case VERIFY:
+                return LABEL_VERIFY;
+            case IMPORT:
+                return LABEL_IMPORT;
             default:
                 throw new IllegalArgumentException("no such item: " + item);
         }
     }
 
     boolean enabled(int item) {
+        if (locked(item)) return false;
         switch (item) {
+            case STORY_LOCKED:
+                return false;
             case PRIMARY:
                 return install != null && (!install.ready() || launchHelperPresent);
             case CONTROLLER_CHECK:
@@ -310,6 +353,9 @@ final class LauncherMenu {
             case ONLINE:
                 // its own save root, seeded from a copy of the story saves: without one the game would start a new game (the prologue)
                 return onlineOffered() && sandbox.storySave;
+            case VERIFY:
+            case IMPORT:
+                return setupTilesOffered();
             default:
                 throw new IllegalArgumentException("no such item: " + item);
         }
@@ -317,7 +363,10 @@ final class LauncherMenu {
 
     /** The line under an item's label: the reason it is disabled, or a message about the last attempt. null = none. */
     String secondLine(int item) {
+        if (locked(item)) return LOCKED_LINE;
         switch (item) {
+            case STORY_LOCKED:
+                return null;
             case PRIMARY:
                 if (install != null && install.ready() && !launchHelperPresent) {
                     return NOT_IN_THIS_BUILD;
@@ -335,6 +384,10 @@ final class LauncherMenu {
             case ONLINE:
                 if (!onlineOffered()) return null;
                 return sandbox.storySave ? PlayMode.ONLINE_LINE : PlayMode.ONLINE_NEEDS_SAVE;
+            case VERIFY:
+                return setupTilesOffered() ? VERIFY_LINE : null;
+            case IMPORT:
+                return setupTilesOffered() ? IMPORT_LINE : null;
             default:
                 throw new IllegalArgumentException("no such item: " + item);
         }
@@ -369,7 +422,7 @@ final class LauncherMenu {
 
     /** A tap on an item: it takes the focus and is activated. */
     Action tap(int item, boolean gameRunning) {
-        if (item != SANDBOX && item != ONLINE && (item < 0 || item >= COUNT)) {
+        if (item != SANDBOX && item != ONLINE && item != VERIFY && item != IMPORT && item != STORY_LOCKED && (item < 0 || item >= COUNT)) {
             throw new IllegalArgumentException("no such item: " + item);
         }
         focused = item;
@@ -410,6 +463,12 @@ final class LauncherMenu {
                     return Action.RECHECK;
                 }
                 return play(PlayMode.STORY, gameRunning, answeredYes && !PlayMode.SANDBOX.equals(askedFor) && !PlayMode.ONLINE.equals(askedFor), answeredGpu);
+            case VERIFY:
+            case IMPORT:
+                // the same pages Set Up Game opens; coming back runs the detection (the screen's onShown / onAppBack)
+                setPlayMessage(null, false, null);
+                wentWhereFilesChange = true;
+                return focused == VERIFY ? Action.OPEN_VERIFY : Action.OPEN_GAME_FILES_SETUP;
             case SETTINGS:
                 return Action.OPEN_SETTINGS;
             case CONTROLLER_CHECK:

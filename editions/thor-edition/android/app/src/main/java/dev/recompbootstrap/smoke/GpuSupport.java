@@ -1,5 +1,8 @@
 package dev.recompbootstrap.smoke;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -305,5 +308,59 @@ final class GpuSupport {
             n = n * 10 + (c - '0');
         }
         return n > 0xFFFFFFFFL ? -1 : n;
+    }
+
+    // ------------------------------------------------------------------------------------------ try anyway (v1302)
+
+    /**
+     * The opt-in switch (files/private-trace/gpu-try-anyway, default off): with it, the game library's graphics start on a GPU
+     * below its descriptor-set minimum instead of refusing (vulkan_engine.cpp, v1302+; read only on such a GPU). The launcher's
+     * About > Unsupported GPU turns it on and off; the support report says its state.
+     */
+    static final String TRY_ANYWAY_SWITCH = "gpu-try-anyway";
+    static final String TRY_ANYWAY_ROW = "Try anyway on an unsupported GPU";
+
+    static File tryAnywayFile(File filesDir) {
+        return new File(new File(filesDir, InstallState.PRIVATE_TRACE), TRY_ANYWAY_SWITCH);
+    }
+
+    static boolean tryAnyway(File filesDir) {
+        return filesDir != null && tryAnywayFile(filesDir).isFile();
+    }
+
+    /** Turns the switch on or off; returns the state the file now has (unchanged when it could not be written). */
+    static boolean setTryAnyway(File filesDir, boolean on) {
+        File file = tryAnywayFile(filesDir);
+        try {
+            if (on) {
+                File dir = file.getParentFile();
+                if (dir != null && !dir.isDirectory()) dir.mkdirs();
+                if (!file.isFile()) new FileOutputStream(file).close();
+            } else if (file.isFile()) {
+                file.delete();
+            }
+        } catch (IOException | SecurityException failed) {
+            // the state below says what happened
+        }
+        return tryAnyway(filesDir);
+    }
+
+    /** One line for the player: what the launcher's check found for this device. */
+    static String status(Verdict verdict) {
+        if (verdict == null || !verdict.known) return "This device's graphics chip: not checked";
+        return "This device's graphics chip: " + (verdict.supported ? "supported" : "not supported yet (" + list(verdict.missing) + ")");
+    }
+
+    /** The About section's text for the switch's state. */
+    static String tryAnywayText(boolean on) {
+        return TRY_ANYWAY_ROW + ": " + (on ? "On" : "Off") + "\n\n"
+                + "Some graphics chips have fewer of the resources the game needs than it asks for, and the game then refuses to"
+                + " start. Turned on, it starts anyway: the game may crash or draw wrongly.\n\n"
+                + "On a supported graphics chip this changes nothing. A turns it " + (on ? "off." : "on.");
+    }
+
+    /** The support report's line for the switch. */
+    static String tryAnywayLine(boolean on) {
+        return TRY_ANYWAY_ROW + ": " + (on ? "on" : "off");
     }
 }

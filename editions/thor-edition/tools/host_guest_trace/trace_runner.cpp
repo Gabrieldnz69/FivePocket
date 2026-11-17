@@ -1546,7 +1546,7 @@ static int runTraceMain(int argc, char** argv,const RecompPrivateTraceCallbacksV
                 (nativeEmptyCacheCoherency && TRACE_SUBMISSION(submitEmptyGuestCacheCoherency)) ||
                 (nativeStateBatches && TRACE_SUBMISSION(submitNativeStateBatch)) ||
                 (nativeStateBatches && experimentalIdleCachePair && TRACE_SUBMISSION(submitNativeMaintenancePoints)) ||
-                // Disabled per independent audit (audit notes): the
+                // Disabled per independent audit (docs/claude/Audit.md): the
                 // verifier accepts real guest-visible effects as side-effect-
                 // free (scratch-register writeback, persistent register-state
                 // changes with no draw, a malformed DRAW_INDX missing its

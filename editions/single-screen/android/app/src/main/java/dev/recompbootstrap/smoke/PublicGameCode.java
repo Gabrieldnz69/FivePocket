@@ -9,7 +9,7 @@ final class PublicGameCode implements ShipBundle {
     // The portable library of the build the desktop builder makes for this app (thor-builder, 2026-11-05): linked without
     // debug sections, with the attempt's own build id, name strings removed; its loaded sections equal the attempt's library.
     // Written by local-analysis/builder/thor-rc1/make_public_config.py from the bundle. The package check binds the record to it.
-    static final String PORTABLE_LIBRARY_SHA256 = "d375b20f011958c6dcdd88899e406259aea0dec76af38e465204ead75f02bd74";
+    static final String PORTABLE_LIBRARY_SHA256 = "f26f86ceae9b59d152e3d51809ff4adaf04cf649fcf939ed51b24e99035beeaf";
     static final String CONFIG = "public/config.json", REQUEST = "public/start-request.bin";
     private final ShipBundle apk;
     private final File filesDir;
@@ -54,6 +54,7 @@ final class PublicGameCode implements ShipBundle {
         }
         Set<String> seen = new HashSet<String>();
         for (CodeBundle.Entry entry : bundle.entries) {
+            if (CodeBundle.ROLE_UI.equals(entry.role)) continue;   // 1.2.0: the player's own launcher files, not pinned (the seal covers them)
             String key = CodeBundle.ROLE_RUNTIME.equals(entry.role) ? entry.name : entry.role;
             ShipConfig.Piece piece = expected.get(key);
             if (piece == null || !seen.add(key)) return PublicCodeWords.EXTRA;

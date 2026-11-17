@@ -42,11 +42,70 @@ final class UiKit {
     /** The menu's typefaces: Nunito Sans at 400 (REGULAR, TITLE, CAPS), 700 (BOLD) and 900 (HEAVY); the system's sans without the file. */
     static final class Faces {
         final Typeface regular, bold, heavy;
+        /** The game's own face from the player's disc (Scene.GAME, UiAssets.GAME_FONT), or null when it was not imported. */
+        final Typeface game;
+        /** M6: the disc's condensed face (Scene.GAME_COND), or null. */
+        final Typeface gameCond;
+        /** The game's own controller glyphs (Scene.IMAGE), by file name; empty when they were not imported. */
+        final java.util.Map<String, Bitmap> glyphs = new java.util.HashMap<String, Bitmap>();
+        /** The disc's loading-screen art (Scene.backdropArt), or null when it was not imported. */
+        final Bitmap art;
 
-        Faces(AssetManager assets) {
+        Faces(AssetManager assets, File filesDir) {
             regular = load(assets, WEIGHT_REGULAR, Typeface.create("sans-serif", Typeface.NORMAL));
             bold = load(assets, WEIGHT_BOLD, Typeface.create("sans-serif", Typeface.BOLD));
             heavy = load(assets, WEIGHT_HEAVY, Typeface.create("sans-serif-black", Typeface.BOLD));
+            game = loadFile(UiAssets.font(filesDir, UiAssets.GAME_FONT));   // the app's private files only (UiAssets), never the package
+            gameCond = loadFile(UiAssets.font(filesDir, UiAssets.COND_FONT));
+            Bitmap picture = null;
+            File artFile = UiAssets.font(filesDir, UiAssets.ART_FILE);
+            if (artFile != null) {
+                try {
+                    picture = BitmapFactory.decodeFile(artFile.getPath());
+                } catch (RuntimeException | OutOfMemoryError unreadable) {
+                    picture = null;   // the menus keep the player's own picture
+                }
+            }
+            art = picture;
+            if (art != null) glyphs.put(UiAssets.ART_FILE, art);   // also as a picture (the landing's hero band)
+            for (String tile : new String[] {UiAssets.TILE_STORY, UiAssets.TILE_SANDBOX, UiAssets.TILE_ONLINE}) {
+                File file = UiAssets.font(filesDir, tile);
+                if (file == null) continue;
+                try {
+                    Bitmap bitmap = BitmapFactory.decodeFile(file.getPath());
+                    if (bitmap != null) glyphs.put(tile, bitmap);
+                } catch (RuntimeException | OutOfMemoryError unreadable) {
+                    // that tile keeps its flat ground
+                }
+            }
+            for (String tile : UiAssets.OWN_TILES) {   // 1.2.0: the owner's own tile art, from the APK (never from the disc)
+                try (java.io.InputStream in = assets.open(UiAssets.OWN_ASSETS + "/" + tile)) {
+                    Bitmap bitmap = BitmapFactory.decodeStream(in);
+                    if (bitmap != null) glyphs.put(tile, bitmap);
+                } catch (java.io.IOException | RuntimeException | OutOfMemoryError absent) {
+                    // not in this APK: the plain ground
+                }
+            }
+            for (String glyph : new String[] {"A", "B", "X", "Y", "LB", "RB", "LT", "RT", "START", "BACK"}) {
+                String name = UiAssets.glyphFile(glyph);
+                File file = UiAssets.font(filesDir, name);
+                if (file == null) continue;
+                try {
+                    Bitmap bitmap = BitmapFactory.decodeFile(file.getPath());
+                    if (bitmap != null) glyphs.put(name, bitmap);
+                } catch (RuntimeException | OutOfMemoryError unreadable) {
+                    // that prompt keeps its key box and letter
+                }
+            }
+        }
+
+        private static Typeface loadFile(File file) {
+            if (file == null) return null;
+            try {
+                return Typeface.createFromFile(file);
+            } catch (RuntimeException unreadable) {
+                return null;
+            }
         }
 
         private static Typeface load(AssetManager assets, String weight, Typeface fallback) {
@@ -59,14 +118,31 @@ final class UiKit {
         }
 
         Typeface of(int face) {
-            return face == Scene.BOLD ? bold : face == Scene.HEAVY ? heavy : regular;
+            switch (pick(face, game != null, gameCond != null)) {
+                case Scene.GAME: return game;
+                case Scene.GAME_COND: return gameCond;
+                case Scene.BOLD: return bold;
+                case Scene.HEAVY: return heavy;
+                default: return regular;
+            }
+        }
+
+        /**
+         * The face a text style is drawn in. 1.2.0 (owner: the menus in Rockstar's font, as the launcher): while the player's disc fonts
+         * are in place every app-drawn menu - the in-game side menu, Online, settings, setup pages, dialogs - uses the game's own face
+         * (the condensed one where it is asked for); without them the bundled faces, as before. Pure.
+         */
+        static int pick(int face, boolean hasGame, boolean hasCond) {
+            if (face == Scene.GAME_COND) return hasCond ? Scene.GAME_COND : hasGame ? Scene.GAME : Scene.REGULAR;
+            if (hasGame) return Scene.GAME;
+            return face == Scene.BOLD ? Scene.BOLD : face == Scene.HEAVY ? Scene.HEAVY : Scene.REGULAR;
         }
 
         private static Faces shared;
 
         /** One set per process (a Typeface is immutable and the file is read once). */
         static synchronized Faces get(Context context) {
-            if (shared == null) shared = new Faces(context.getApplicationContext().getAssets());
+            if (shared == null) shared = new Faces(context.getApplicationContext().getAssets(), context.getApplicationContext().getFilesDir());
             return shared;
         }
     }
@@ -147,20 +223,42 @@ final class UiKit {
         private final Path path = new Path();
         private final Rect source = new Rect();
         private final RectF window = new RectF();
+        private final RectF box = new RectF();   // an IMAGE item's box (window stays the whole view for FILL and BACKDROP)
         private final Faces faces;
 
         Painter(Context context) {
             faces = Faces.get(context);
         }
 
-        private void face(Paint target, int sizePx, int face) {
+        private void face(Paint target, float sizePx, int face) {
             target.setTextSize(sizePx);
             target.setTypeface(faces.of(face));
         }
 
         @Override public float width(String text, int sizePx, int face) {
+            return width(text, (float) sizePx, face);
+        }
+
+        @Override public float width(String text, float sizePx, int face) {
             face(measurePaint, sizePx, face);
             return measurePaint.measureText(text);
+        }
+
+        @Override public boolean gameFont() {
+            return faces.game != null;
+        }
+
+        @Override public boolean hasArt() {
+            return faces.art != null;
+        }
+
+        @Override public boolean hasPicture(String file) {
+            return file != null && faces.glyphs.containsKey(file);
+        }
+
+        @Override public boolean hasGlyph(String glyph) {
+            String name = UiAssets.glyphFile(glyph);
+            return name != null && faces.glyphs.containsKey(name);
         }
 
         static float left(int viewW, int panelW, float u) {
@@ -193,6 +291,13 @@ final class UiKit {
                         canvas.drawRect(window, paint);
                         break;
                     case Scene.BACKDROP:
+                        if ("art".equals(item.text) && faces.art != null) {   // the disc's art: sharp, unshaded, cropped to fill
+                            int[] part = MenuLayout.cropToFill(faces.art.getWidth(), faces.art.getHeight(), viewW, viewH);
+                            source.set(part[0], part[1], part[2], part[3]);
+                            paint.setColor(0xFFFFFFFF);
+                            canvas.drawBitmap(faces.art, source, window, paint);
+                            break;
+                        }
                         if (backdrop != null) {
                             int[] part = MenuLayout.cropToFill(backdrop.getWidth(), backdrop.getHeight(), viewW, viewH);
                             source.set(part[0], part[1], part[2], part[3]);
@@ -216,6 +321,30 @@ final class UiKit {
                         paint.setStrokeWidth(item.stroke);
                         canvas.drawCircle(item.x + item.w / 2f, item.y + item.h / 2f, item.w / 2f, paint);
                         break;
+                    case Scene.GRADIENT: {
+                        float x1 = item.stroke > 0f ? item.x + item.w : item.x, y1 = item.stroke > 0f ? item.y : item.y + item.h;
+                        int c0 = item.color, c1 = item.color2;
+                        if (item.layer == Scene.CONTENT && fade < 1f) {
+                            c0 = (Math.round((c0 >>> 24) * fade) << 24) | (c0 & 0xFFFFFF);
+                            c1 = (Math.round((c1 >>> 24) * fade) << 24) | (c1 & 0xFFFFFF);
+                        }
+                        paint.setColor(0xFFFFFFFF);
+                        paint.setShader(new LinearGradient(item.x, item.y, x1, y1, c0, c1, Shader.TileMode.CLAMP));
+                        canvas.drawRect(item.x, item.y, item.x + item.w, item.y + item.h, paint);
+                        paint.setShader(null);
+                        break;
+                    }
+                    case Scene.IMAGE: {
+                        Bitmap glyph = faces.glyphs.get(item.text);
+                        if (glyph != null) {   // cropped to fill the box (a glyph is square in a square box: whole)
+                            box.set(item.x, item.y, item.x + item.w, item.y + item.h);
+                            int[] part = MenuLayout.cropToFill(glyph.getWidth(), glyph.getHeight(), Math.max(1, Math.round(item.w)),
+                                    Math.max(1, Math.round(item.h)));
+                            source.set(part[0], part[1], part[2], part[3]);
+                            canvas.drawBitmap(glyph, source, box, paint);
+                        }
+                        break;
+                    }
                     case Scene.POLY:
                     case Scene.LINE:
                         path.rewind();
@@ -232,7 +361,7 @@ final class UiKit {
                         canvas.drawPath(path, paint);
                         break;
                     default: {   // TEXT: centred vertically in its box
-                        face(paint, item.size, item.face);
+                        face(paint, Scene.sizeOf(item), item.face);
                         paint.getFontMetrics(metrics);
                         float baseline = item.y + item.h / 2f - (metrics.ascent + metrics.descent) / 2f;
                         float width = paint.measureText(item.text);
@@ -292,8 +421,38 @@ final class UiKit {
             invalidate();
         }
 
+        @Override public boolean gameFont() {
+            return painter.gameFont();
+        }
+
+        @Override public boolean hasGlyph(String glyph) {
+            return painter.hasGlyph(glyph);
+        }
+
+        @Override public boolean hasArt() {
+            return painter.hasArt();
+        }
+
+        @Override public boolean hasPicture(String file) {
+            return painter.hasPicture(file);
+        }
+
+        @Override public float width(String text, float sizePx, int face) {
+            return painter.width(text, sizePx, face);
+        }
+
         @Override public float width(String text, int sizePx, int face) {
             return painter.width(text, sizePx, face);
+        }
+
+        /** Device pixels per panel pixel (menu revamp M1: EnhancedScenes.touchScale). */
+        float unit() {
+            return u;
+        }
+
+        /** The screen's horizontal pixels per inch (menu revamp M1: EnhancedScenes.touchScale). */
+        float xdpi() {
+            return getResources().getDisplayMetrics().xdpi;
         }
 
         /** The frame for this view: DEFAULT, or one that fills a landscape screen taller than 16:9 (MenuLayout.Frame.screen). */

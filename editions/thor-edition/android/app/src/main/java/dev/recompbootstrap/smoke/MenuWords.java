@@ -30,6 +30,26 @@ final class MenuWords {
     /** recomp_imenu_v1 ops: 3 style FivePocket (the library's hold-Back opener off), 4 style Interaction Menu (on). */
     static final int IMENU_OP_FIVEPOCKET = 3, IMENU_OP_INTERACTION = 4;
 
+    /** Online mode leave (ONLINE-MODE-SPEC §1.6; proposed to trainer-mods as recomp_trainer_state_v1 bit 26): the OnlineMode controller has
+     *  finished its leave (clouds up, the session closed, nothing half saved); the game window then closes, back to the launcher. A
+     *  library without Online mode never sets it. trainerState -100 = no trainer. */
+    static final int STATE_ONLINE_LEFT = 1 << 26;
+    static boolean onlineLeft(int trainerState) { return trainerState != -100 && (trainerState & STATE_ONLINE_LEFT) != 0; }
+    /**
+     * Menu revamp M7: state bits 27-28 = StoryCharacter (ALLOCATION.md, trainer-mods 2026-11-08; from GET_ENTITY_MODEL(PLAYER_PED_ID())
+     * each tick): 0 unknown / not a story character (Online, another model, no ped), 1 Michael, 2 Franklin, 3 Trevor. The pause frame's
+     * accent is that character's HUD colour from the disc (hudcolor.dat); 0 or no trainer (-100) keeps the given default.
+     */
+    static int storyCharacter(int trainerState) { return trainerState == -100 ? 0 : (trainerState >> 27) & 3; }
+    static int characterAccent(int trainerState, int fallback) {
+        switch (storyCharacter(trainerState)) {
+            case 1: return MenuLayout.ACCENT_MICHAEL;
+            case 2: return MenuLayout.ACCENT_FRANKLIN;
+            case 3: return MenuLayout.ACCENT_TREVOR;
+            default: return fallback;
+        }
+    }
+
     /** The hold-Select setting in menu.txt's words; no hold-select word (no file, or a file from a build before 1.1.5, which wrote no word
      *  for On) = whenUnset, the edition's default. */
     static int holdSelect(byte[] text, int whenUnset) {

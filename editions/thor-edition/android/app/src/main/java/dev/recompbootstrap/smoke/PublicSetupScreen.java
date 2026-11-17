@@ -131,5 +131,5 @@ final class PublicSetupScreen implements Screen {
             }
         }, () -> { view.removeCallbacks(tick); model.finished(outcome[0], activation[0], seal[0]); render(); });
     }
-    private void render() { if (view != null) { view.show(MenuScenes.build(model.page(), view)); view.setKeepScreenOn(model.busy); } }
+    private void render() { if (view != null) { view.show(EnhancedScenes.build(model.page(), view)); view.setKeepScreenOn(model.busy); } }
 }

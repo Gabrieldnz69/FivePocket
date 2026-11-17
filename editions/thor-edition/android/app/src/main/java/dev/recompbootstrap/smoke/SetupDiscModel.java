@@ -26,8 +26,10 @@ final class SetupDiscModel {
     static final int OVERLAY_NONE = 0, OVERLAY_START = 1, OVERLAY_STOP = 2;
     static final int BUTTON_START = 0, BUTTON_NOT_NOW = 1, BUTTON_STOP = 0, BUTTON_GO_ON = 1;
 
-    private static final String[] LABELS = {"1  Play Disc (Disc 2)", "2  Install Disc (Disc 1)", "3  Finish"};
-    private static final String[] WORDS = {"To do", "Reading", "Copying", "Ready", "Continue", "Done", "Problem"};
+    // 1.2.0 (owner: the iOS "Import Game Discs" page he likes): its row names (no step numbers) and its "Not imported"; the order and the
+    // steps are this page's own (the play disc first), unchanged.
+    private static final String[] LABELS = {"Play Disc (Disc 2)", "Install Disc (Disc 1)", "Finish"};
+    private static final String[] WORDS = {"Not imported", "Reading", "Copying", "Ready", "Continue", "Done", "Problem"};
     private static final String[] START_BUTTONS = {"Start", "Not now"}, STOP_BUTTONS = {"Stop", "Continue"};
     private static final String[] DISC_NAME = {"the play disc", "the install disc"};
     private static final String[] DISC_FULL = {"the play disc (Disc 2)", "the install disc (Disc 1)"};

@@ -421,7 +421,7 @@ final class SetupScreen implements Screen {
 
     private void render() {
         if (root == null) return;
-        root.show(MenuScenes.build(ShellPages.setup(model), root));
+        root.show(EnhancedScenes.build(ShellPages.setup(model), root));   // (2026-11-17: the Enhanced frame, SPEC §125)
         root.setKeepScreenOn(model.busy());   // a long copy must not be cut short by the screen timeout
     }
 }

@@ -823,11 +823,29 @@ final class TouchPad {
         final int lt=physical[1]>PHYSICAL_TRIGGER?physical[1]:Math.max(physical[1],pad[5]),rt=physical[2]>PHYSICAL_TRIGGER?physical[2]:Math.max(physical[2],pad[6]);
         return new int[]{gesture[0]|pad[0],lt,rt,lx,ly,rx,ry};
     }
-    /** A fresh physical input (SPEC 5): a button not held before, a stick past XInput's dead zone, a trigger above 30. */
-    static boolean freshPhysical(int[] physical,int previousButtons){
-        return (physical[0]&~previousButtons)!=0 || Math.abs(physical[3])>7849 || Math.abs(physical[4])>7849 || Math.abs(physical[5])>8689 ||
-               Math.abs(physical[6])>8689 || physical[1]>PHYSICAL_TRIGGER || physical[2]>PHYSICAL_TRIGGER;
+    /** A fresh physical input (SPEC 5): a button not held before, a stick that has just left XInput's dead zone, a trigger that has just
+     *  gone above 30. previous = the last publish's physical values (null: none yet = at rest).
+     *  touch-120 (2026-11-16): the stick and trigger parts are edges, not levels. With levels, an axis that rests outside its dead zone (a
+     *  trigger read at -1, a sensor or shoulder key listed as a joystick) was "fresh" at every publish: the touch pad hid itself again at
+     *  each one and let go of the held fingers, so it flickered away under the player's thumbs. A real stick pushed from rest still hides
+     *  the pad on its first publish past the dead zone. */
+    static boolean freshPhysical(int[] physical,int[] previous){
+        final int[] p=previous!=null?previous:new int[7];
+        return (physical[0]&~p[0])!=0 || past(physical[3],p[3],7849) || past(physical[4],p[4],7849) || past(physical[5],p[5],8689) ||
+               past(physical[6],p[6],8689) || (physical[1]>PHYSICAL_TRIGGER && p[1]<=PHYSICAL_TRIGGER) || (physical[2]>PHYSICAL_TRIGGER && p[2]<=PHYSICAL_TRIGGER);
     }
+    private static boolean past(int now,int before,int dead){return Math.abs(now)>dead && Math.abs(before)<=dead;}
+    /** touch-120 (2026-11-16): the right-edge strip where Android's edge Back gesture must not start while the touch controls are on, in
+     *  view pixels {left, top, right, bottom}, or null (controls off, no view). Android's gesture navigation turns a swipe that starts at the
+     *  right edge into Back, and Back opens the side menu (PrivateTraceActivity.sideMenuKey): a camera swipe started there opened the menu and
+     *  cancelled the finger. Android honours at most 200 dp of exclusion per edge, so the strip covers the lower 200 dp, where the corner
+     *  buttons and the swipe camera's thumb are. The left edge is left alone: a swipe in from it opening the side menu is the menu's design. */
+    float[] rightEdgeExclusion(float dpPx){
+        if(mode==Mode.OFF || !(vw>0) || !(vh>0) || !(dpPx>0))return null;
+        final float w=EXCLUDE_WIDTH_DP*dpPx,h=Math.min(vh,EXCLUDE_MAX_DP*dpPx);
+        return new float[]{Math.max(0f,vw-w),vh-h,vw,vh};
+    }
+    static final float EXCLUDE_WIDTH_DP=48f,EXCLUDE_MAX_DP=200f;
 
     // ======== the physical pad (every publish)
     /** A physical input (a new button, a stick past XInput's dead zone, a trigger above 30) hides the controls when the setting says so. */
@@ -848,6 +866,24 @@ final class TouchPad {
      *  faint grey disc): the controls' opacity without the idle fade; it still goes with HIDE / a controller / the pause map. */
     /** Everything the drawing depends on besides the fingers (v15, owner: "the button does not change to the weapon you are holding until you
      *  tap the button again"): QolTouch compares it at every poll and redraws when it changes - no touch needed. */
+    /** jank-1117: what the fingers make the overlay draw (held controls, the sticks' ring and knob in whole pixels, a trigger's depth, a wheel
+     *  button's slide, the sticks being blocked). A move that leaves it unchanged needs no redraw: a swipe-camera finger (no ring drawn) or a
+     *  finger resting on a button moved, 120-240 times a second, and each redrew the whole overlay. */
+    long drawKey(long t){
+        long h=(sticksBlocked(t)?1:0)|(aimLatched?2:0);
+        for(Finger f:fingers){
+            h=h*31+f.id;
+            if(f.stick>0){final Stick s=sticks[f.stick-1];
+                if(f.stick==1 || rightRingDrawn())h=((h*31+Math.round(s.cx))*31+Math.round(s.cy))*31+(Math.round(s.kx)*4099L+Math.round(s.ky));
+                continue;}
+            h=(h*31+System.identityHashCode(f.control))*31+(f.moved?1:0);
+            if(f.control.kind==Kind.TRIGGER_L || f.control.kind==Kind.TRIGGER_R)h=h*31+Math.round(f.value);
+        }
+        return h;
+    }
+    /** jank-1117: when the idle fade begins (FADE_IDLE_MS after the last touch, nothing held), so the overlay can draw it then; before, it
+     *  only showed at the next unrelated redraw (a weapon switch, a context change), the controls jumping straight to the faded opacity. */
+    long idleFadeAt(){return fingers.isEmpty() && mode!=Mode.OFF?lastTouch+FADE_IDLE_MS:Long.MAX_VALUE;}
     long visualKey(long t){
         return (long)weaponGroup|(long)overlay.ordinal()<<4|(long)context()<<8|(mapShown?1L:0L)<<16|(hidden?1L:0L)<<17|(userHidden?1L:0L)<<18|
                (moreOpen?1L:0L)<<19|(skipRevealed?1L:0L)<<20|(sticksBlocked(t)?1L:0L)<<21|(trainerButton?1L:0L)<<22|(imenuButton?1L:0L)<<23|(long)(screens>>>16)<<24;

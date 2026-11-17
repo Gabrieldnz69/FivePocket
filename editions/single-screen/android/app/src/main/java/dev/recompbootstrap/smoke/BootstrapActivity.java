@@ -56,9 +56,15 @@ public final class BootstrapActivity extends Activity {
     private SelfTestUi selfTestUi;
     private TextView selfTestHeading;
 
+    /** 2026-11-17: the game's own menu sounds from the player's files/ui/sounds (MenuSounds), silent where a file is missing. */
+    private UiSounds menuSounds;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        try { menuSounds = new UiSounds(getFilesDir()); } catch (RuntimeException e) { menuSounds = null; }
+        ShipFirstRun.counterOffUnlessSaved(getFilesDir());   // (1.2.0, owner: no frame-rate counter: an old switch goes as the launcher opens)
+        takeReturn(getIntent());   // Update 1 Online mode: started by the game window's Online leave (LaunchReturn)
         if (!ScreenStack.smokeRequested(new IntentExtras())) {
             // Launcher mode. NativeBridge is not touched on this path, so the self-test library is not loaded.
             launcher = new LauncherHost();
@@ -192,6 +198,19 @@ public final class BootstrapActivity extends Activity {
         }
     }
 
+    /** Update 1 Online mode: the game window's Online leave brings this menu forward (LaunchReturn.FLAGS -> onNewIntent). */
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        takeReturn(intent);   // onResume follows: the launcher screen refreshes and draws the Online tile highlighted
+    }
+
+    private static void takeReturn(android.content.Intent intent) {
+        String word = intent == null ? null : intent.getStringExtra(LaunchReturn.EXTRA);
+        if (LaunchReturn.ONLINE.equals(word)) LauncherScreen.returnTo = word;
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -247,6 +266,7 @@ public final class BootstrapActivity extends Activity {
             selfTest.leave();   // the worker detaches and ends the runtime; nothing here waits for it
             selfTestUi.clear();
         }
+        if (menuSounds != null) { menuSounds.release(); menuSounds = null; }
         super.onDestroy();
     }
 
@@ -617,10 +637,13 @@ public final class BootstrapActivity extends Activity {
                 return;
             }
             boolean handled = top.onNav(command, repeat);
+            boolean popped = false;
             if (!handled && command == NavInput.BACK && stack.size() > 1 && top == stack.top()) {
                 navInput.reset();
                 stack.backNotHandledBy(top);
+                popped = true;
             }
+            if (menuSounds != null) menuSounds.play(MenuSounds.soundFor(command, handled, popped));
         }
 
         @Override public long now() {

@@ -136,7 +136,10 @@ final class PublicSetupScreen implements Screen {
         if (view == null) return;
         MenuScenes.Page page = model.page();
         page.touchIcons = view.touchIcons();
-        view.show(MenuScenes.build(page, view, view.frame()));
+        { MenuLayout.Frame sf = view.frame();   // (2026-11-17: the setup pages in the Enhanced frame, SPEC §125)
+          float sk = page.touchIcons ? EnhancedScenes.touchScale(view.xdpi(), view.unit(), sf.h) : 1f;
+          Scene ss = EnhancedScenes.build(page, view, sf.h, sk, page.touchIcons);
+          ss.panelW = sf.w; ss.panelH = sf.h; view.show(ss); }
         view.setKeepScreenOn(model.busy);
     }
 }

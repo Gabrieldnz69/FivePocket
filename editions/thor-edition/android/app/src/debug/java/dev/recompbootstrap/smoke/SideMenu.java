@@ -36,6 +36,7 @@ final class SideMenu {
     enum Page {SET_DISPLAY,SET_FRAME_RATE,SET_WORLD,SET_CONTROLS,SCR_LOWER,SCR_WHEELS,SCR_PHONE,TOUCH,
         TR_TRAINER,TR_PLAYER,TR_VEHICLES,TR_TELEPORT,TR_WORLD,TR_LOWER_PLAYER,MODS,MY_MUSIC,
         ON_CHARACTER,ON_CREATOR,ON_PLACES,ON_ACTIVITIES,   // (Update 1: the Online tab, OnlineMenu)
+        ON_CASH,   // (2026-11-09: the Online tab's Add Cash, only in a local Online session with a library that has "add-cash")
         TR_FAVOURITES,   // (Update 1 QoL: the trainer's pinned items, Favourites)
         SET_SUPPORT}     // (Update 1: Settings > Support, Copy Diagnostics)
     enum Kind {ACTION,PAGE,CHOICE,TOGGLE}
@@ -82,6 +83,8 @@ final class SideMenu {
         default String info(Page page){return "";}
         /** The small lines at the header's right. */
         default List<String> header(){return Arrays.asList("In Game");}
+        /** M7: the pause frame's accent (the current tab's line, the sliders): the game's HUD colour of who is playing. */
+        default int accent(){return MenuLayout.ACCENT;}
         /** Update 1 QoL: may this row be held (A held / touch held: HOLD instead of acting)? Then A acts when it is let go. */
         default boolean holdable(Page page,Row row){return false;}
         /** The prompt for Y on a row that may be held (Pin / Unpin). */
@@ -111,6 +114,9 @@ final class SideMenu {
     SideMenu(Rows source){this(source,false,true);}
     /** lower: the Thor's lower-screen trainer (compact frame, one section per tab, opened by its own gesture, not the edge swipe). */
     SideMenu(Rows source,boolean lower,boolean edgeOpens){this.source=source;this.lower=lower;this.edgeOpens=edgeOpens;}
+    /** M7: the main screen's menu in the game's own 360 pause frame (EnhancedScenes), unless settings/menu-classic (ThorMenus). */
+    private boolean pause;
+    void pauseFrame(boolean on){pause=on && !lower;}
 
     void view(float w,float h){vw=Math.max(1f,w);vh=Math.max(1f,h);}
     /** The screen's density (DisplayMetrics.xdpi): the lower screen's frame is drawn at the touch size (MenuLayout.touchUnit). */
@@ -267,6 +273,8 @@ final class SideMenu {
         p.tabs=new String[ts.size()];for(int i=0;i<ts.size();++i)p.tabs[i]=ts.get(i).title;
         p.tab=tab;p.shoulders=!lower;
         p.backdrop=!lower;
+        p.pauseFrame=pause;
+        p.accent=source.accent();
         if(!lower && t.pages.length>1){
             p.column=t.names;p.columnSelected=section[tab];p.columnLit=true;
             p.columnEnabled=new boolean[t.pages.length];
@@ -308,9 +316,9 @@ final class SideMenu {
         if(alert){shown=MenuScenes.restartAlert(ALERT_TEXT,measure);return shown;}
         final MenuLayout.Frame f=frame();
         final MenuScenes.Page p=page(f);
-        first[page().ordinal()]=MenuScenes.firstRow(p,measure,f);
+        first[page().ordinal()]=pause?EnhancedScenes.firstRow(p,measure):MenuScenes.firstRow(p,measure,f);
         p.rowFirst=first[page().ordinal()];
-        shown=MenuScenes.build(p,measure,f);
+        shown=pause?EnhancedScenes.build(p,measure):MenuScenes.build(p,measure,f);
         return shown;
     }
     static final String ALERT_TEXT="This setting change requires a restart.";

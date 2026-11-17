@@ -2916,7 +2916,7 @@ bool GuestImportRegistry::submitVerifiedSideEffectFreeBatch(std::uint32_t writeW
         // (worker threads blocked, 0% CPU); this bound was applied in
         // response, but the precise mechanism connecting the two was not
         // confirmed on hardware before this was written - see
-        // the project notes §0.5 for the full, honest account, including
+        // docs/claude/CONTEXT.md §0.5 for the full, honest account, including
         // an earlier draft of this comment that incorrectly claimed this
         // function ran BEFORE submitNativeStateBatch.
         if (root[0]!=0xC0013F00 || !root[2] || root[2]<=256 || root[2]>maxRootWords || (root[1]&3) ||

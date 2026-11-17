@@ -36,6 +36,7 @@ final class SideMenu {
     enum Page {SET_DISPLAY,SET_FRAME_RATE,SET_WORLD,SET_CONTROLS,SCR_LOWER,SCR_WHEELS,SCR_PHONE,TOUCH,
         TR_TRAINER,TR_PLAYER,TR_VEHICLES,TR_TELEPORT,TR_WORLD,TR_LOWER_PLAYER,MODS,MY_MUSIC,
         ON_CHARACTER,ON_CREATOR,ON_PLACES,ON_ACTIVITIES,   // (Update 1: the Online tab, OnlineMenu)
+        ON_CASH,   // (2026-11-09: the Online tab's Add Cash, only in a local Online session with a library that has "add-cash")
         TR_FAVOURITES,   // (Update 1 QoL: the trainer's pinned items, Favourites)
         SET_SUPPORT}     // (Update 1: Settings > Support, Copy Diagnostics)
     enum Kind {ACTION,PAGE,CHOICE,TOGGLE}

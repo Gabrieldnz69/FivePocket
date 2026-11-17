@@ -21,6 +21,20 @@ final class CodeBundle {
     static final long MAX_BYTES = (1L << 32) - 2;
     static final String ROLE_LIBRARY = "game-library", ROLE_EXECUTABLE = "title-xex", ROLE_IMAGE = "decoded-image",
             ROLE_SHADERS = "shader-pack", ROLE_RUNTIME = "runtime-data";
+    /**
+     * 1.2.0 (LEDGER 1b): the launcher's fonts, glyphs, art and sounds, made by the builder from the player's own discs. Optional;
+     * read in place from files/game-install/bundle/ui (UI_DIR); never part of the public pin (PublicGameCode skips them).
+     */
+    static final String ROLE_UI = "ui-asset", UI_DIR = "game-install/bundle/ui";
+    static final long UI_MAX_BYTES = 16L * 1024 * 1024;
+
+    /** A ui-asset is a file under ui/ (or ui/sounds/) of a kind the launcher reads, of a sensible size. */
+    static boolean uiAssetAllowed(String name, long bytes) {
+        if (!name.startsWith("ui/") || bytes > UI_MAX_BYTES) return false;
+        String rest = name.substring(3);
+        if (rest.startsWith("sounds/")) return rest.indexOf('/', 7) < 0 && rest.endsWith(".wav");
+        return rest.indexOf('/') < 0 && (rest.endsWith(".ttf") || rest.endsWith(".png") || rest.endsWith(".txt"));
+    }
     static final String PUBLIC_ABI = "private-trace-fd-dlopen/2";
 
     static final class Entry {
@@ -132,8 +146,11 @@ final class CodeBundle {
             String sha = string(c.get("sha256"), "sha256 of " + name);
             if (!SetupCatalog.isSha256(sha)) throw new IllegalArgumentException("component " + name + " has no SHA-256 value");
             String role = string(c.get("role"), "role of " + name);
+            if (ROLE_UI.equals(role) && !uiAssetAllowed(name, bytes)) {
+                throw new IllegalArgumentException("component " + name + " is not a launcher file this app reads");
+            }
             if (!ROLE_LIBRARY.equals(role) && !ROLE_EXECUTABLE.equals(role) && !ROLE_IMAGE.equals(role) && !ROLE_SHADERS.equals(role)
-                    && !(version == 2 && PUBLIC_ABI.equals(abi) && ROLE_RUNTIME.equals(role))) {
+                    && !ROLE_UI.equals(role) && !(version == 2 && PUBLIC_ABI.equals(abi) && ROLE_RUNTIME.equals(role))) {
                 throw new IllegalArgumentException("component " + name + " has a role this app does not know: " + role);
             }
             if (ROLE_EXECUTABLE.equals(role) && !sha.equals(executable)) {

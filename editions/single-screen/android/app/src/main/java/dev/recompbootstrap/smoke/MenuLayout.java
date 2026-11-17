@@ -38,8 +38,11 @@ final class MenuLayout {
      * on the PC reference, Michael's on the Thor's capture of the pause menu, Trevor's is not measured yet. ACCENT = Franklin's, the
      * one used while the app does not know the character.
      */
-    static final int ACCENT = 0xFFACECA9, ACCENT_FRANKLIN = ACCENT, ACCENT_MICHAEL = 0xFF81B7D2, ACCENT_TREVOR = 0xFFF0A75E;
-    static final int TRACK = 0x4DACECA9, TRACK_ON_SELECT = 0xE6000000, TRACK_OFF = 0x4D858785;
+    // Menu revamp M7: the disc's own HUD colours (common.rpf!/data/ui/hudcolor.dat: HUD_COLOUR_FRANKLIN 171,237,171, MICHAEL 101,180,212,
+    // TREVOR 255,163,87, FREEMODE = YELLOW 240,200,80 for Online), in place of the capture-measured #ACECA9 / #81B7D2 / #F0A75E
+    static final int ACCENT = 0xFFABEDAB, ACCENT_FRANKLIN = ACCENT, ACCENT_MICHAEL = 0xFF65B4D4, ACCENT_TREVOR = 0xFFFFA357,
+            ACCENT_ONLINE = 0xFFF0C850;
+    static final int TRACK = 0x4DABEDAB, TRACK_ON_SELECT = 0xE6000000, TRACK_OFF = 0x4D858785;
     /** The "changed" strip on a light bar, where the accent itself would not show. */
     static final int MARK_ON_SELECT = 0xFF4E9E4B;
     static final int WARNING = 0xFFF0C850, ERROR = 0xFFFF7A70, ALERT_YELLOW = 0xFFF0C84B;

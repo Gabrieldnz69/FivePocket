@@ -428,7 +428,10 @@ final class SetupScreen implements Screen {
         if (root == null) return;
         MenuScenes.Page page = ShellPages.setup(model);
         page.touchIcons = root.touchIcons();
-        root.show(MenuScenes.build(page, root, root.frame()));
+        { MenuLayout.Frame sf = root.frame();   // (2026-11-17: the setup pages in the Enhanced frame, SPEC §125)
+          float sk = page.touchIcons ? EnhancedScenes.touchScale(root.xdpi(), root.unit(), sf.h) : 1f;
+          Scene ss = EnhancedScenes.build(page, root, sf.h, sk, page.touchIcons);
+          ss.panelW = sf.w; ss.panelH = sf.h; root.show(ss); }
         root.setKeepScreenOn(model.busy());   // a long copy must not be cut short by the screen timeout
     }
 }

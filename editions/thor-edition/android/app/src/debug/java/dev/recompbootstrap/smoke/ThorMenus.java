@@ -26,6 +26,7 @@ final class ThorMenus {
         // Update 1 QoL: the favourites and where each menu was left, from the last session
         rows.favourites.load(MenuFiles.read(files,MenuFiles.FAVOURITES));
         rows.loadMenuWords(MenuFiles.read(files,MenuWords.FILE),MenuFiles.read(files,MenuWords.QUICK_FILE)); // (Update 1: Hold Select, Quick Menu Style)
+        main.pauseFrame(!new File(files,EnhancedScenes.CLASSIC_SWITCH).exists()); // (menu revamp M7: the 360 pause frame)
         main.restore(MenuFiles.read(files,MenuFiles.MAIN));lower.restore(MenuFiles.read(files,MenuFiles.LOWER));
         rows.trainer=new SideMenuRows.Trainer(){
             public boolean present(){return PrivateTraceActivity.trainerState()!=-100;}
@@ -64,6 +65,13 @@ final class ThorMenus {
                         if(changed!=null)changed.run();});
                 },"diagnostics");
                 t.setPriority(Thread.MIN_PRIORITY);t.start();
+            }
+            public void notice(String text){ // (2026-11-09: Add Cash's "+$N": a short toast on the game screen and the standard click)
+                final android.app.Activity a=activity;Log.i(TAG,"SIDE_MENU notice "+text);
+                if(a==null)return;
+                a.runOnUiThread(()->{
+                    a.getWindow().getDecorView().playSoundEffect(android.view.SoundEffectConstants.CLICK);
+                    android.widget.Toast.makeText(a,text,android.widget.Toast.LENGTH_SHORT).show();});
             }
             public int gameInteractionMenu(){final int r=PrivateTraceActivity.imenu(5);Log.i(TAG,"SIDE_MENU game interaction menu -> "+r);return r;}
             public void quickMenuStyle(int style){final boolean w=MenuFiles.quickMenu(files,style);

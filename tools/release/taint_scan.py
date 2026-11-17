@@ -22,7 +22,7 @@ NOTE lines. Do not list the translator's own header (ppc_context.h): it is upstr
 Every WINDOW-byte run that appears in both a published file and a --retail file is a finding, unless it is a
 counting run (8/16/32-bit numbers stepping by a fixed amount, as in font and file tables; listed as a NOTE), or the window has fewer than MIN-DISTINCT different
 byte values (padding, rows of spaces) or the exact run is listed with a reason in the allow file. An allow line may name
-where the run is allowed: 'DIGEST path=SUFFIX REASON' allows it only in a published file whose path ends with SUFFIX, and
+where the run is allowed: 'DIGEST path=SUFFIX REASON' allows it only in a published file whose path ends with SUFFIX (%20 for a space), and
 'DIGEST path=SUFFIX,name REASON' only when the run is also one upper-case name ([A-Z0-9_]: a game function's name quoted as a
 fact, publish decision 20); the same run in any other file, or a run that is more than the name, is still a finding.
 'file=SHA256 path=SUFFIX REASON' allows every run in one third-party file: the published file at that path whose whole
@@ -79,6 +79,7 @@ def walk(paths):
 
 
 def load_allow(path):
+    from urllib.parse import unquote
     """digest -> list of (path suffix or None, name only, reason)"""
     allowed = {}
     if path and Path(path).exists():
@@ -89,12 +90,13 @@ def load_allow(path):
                 if digest.startswith('file='):         # a whole third-party file: 'file:<sha256>' -> [(path suffix, reason)]
                     where, _, reason = rest.partition(' ')
                     allowed.setdefault('file:' + digest[5:].lower(), []).append(
-                        (where[len('path='):] if where.startswith('path=') else None, False, reason.strip()))
+                        (unquote(where[len('path='):]) if where.startswith('path=') else None, False, reason.strip()))
                     continue
                 suffix, name_only = None, False
                 if rest.startswith('path='):
                     where, _, rest = rest.partition(' ')
                     suffix, _, flag = where[len('path='):].partition(',')
+                    suffix = unquote(suffix)               # %20 for a space in a published name ('FivePocket Builder.exe')
                     name_only = flag == 'name'
                 allowed.setdefault(digest.lower(), []).append((suffix, name_only, rest.strip()))
     return allowed

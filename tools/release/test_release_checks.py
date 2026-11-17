@@ -274,6 +274,17 @@ class Taint(unittest.TestCase):
         out = run('taint_scan.py', '--published', longer.root, '--retail', retail.root / 'game.bin', '--allow', allow.root / 'allow.txt')
         self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
 
+    def test_a_path_allowance_names_a_space_as_percent_20(self):
+        run_bytes = os.urandom(64)
+        retail = Tree({'game.bin': os.urandom(20_000) + run_bytes + os.urandom(20_000)})
+        allow = Tree({'allow.txt': f'{hashlib.sha256(run_bytes).hexdigest()} path=builder/FivePocket%20Builder.exe a linker stub\n'})
+        blob = os.urandom(2000) + run_bytes + os.urandom(2000)
+        for name, path, code in (('the named file', 'builder/FivePocket Builder.exe', 0), ('another file', 'builder/Other Builder.exe', 1)):
+            with self.subTest(name):
+                out = run('taint_scan.py', '--published', Tree({path: blob}).root, '--retail', retail.root / 'game.bin',
+                          '--allow', allow.root / 'allow.txt')
+                self.assertEqual(out.returncode, code, out.stdout + out.stderr)
+
     def test_a_file_level_allowance_covers_only_that_files_exact_bytes_at_that_path(self):
         retail_bytes = os.urandom(200_000)
         retail = Tree({'game.bin': retail_bytes})

@@ -4,6 +4,44 @@ One version number covers every edition and every download of a release (the app
 the source archive). Format: [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-11-17
+
+Android (single-screen and Thor Edition) and the Windows builders. iOS 1.2.0 follows. The new features need game code made
+with the 1.2.0 builder: rebuild your package from your discs.
+
+### Added
+- **New menus**: the launcher is drawn like the game's own Enhanced menus. The Play tab shows its choices as tiles (Story
+  Mode, Sandbox, Online, Verify Game Data, Import Game Discs) over the loading-screen art from your discs; Settings,
+  Controller and About keep the same tab strip on every screen size.
+- **Verify Game Data** and **Import Game Discs** on the Play tab: Verify looks at every game file on the device again,
+  disc by disc; Import opens the setup page (game code and both discs).
+- **Locked until set up**: on a fresh install Story Mode, Sandbox and Online show a padlock and say "Set up the game to
+  unlock." until setup is complete.
+- **Setup pages** in the same frame as the menus, with the same wording on every step.
+- **The game's own fonts**: once your game code is imported, every menu of the app (launcher, settings, setup pages,
+  dialogs, the in-game side menu) uses the game's fonts from your discs. Before that, the app's own font.
+- **Menu sounds**: the launcher plays the game's Select and Back sounds, made by the builder from your discs.
+- **Online** on the Play tab when the game code has it (Thor Edition and single-screen).
+- **Unsupported GPU**: About > Unsupported GPU can let the game try to start on a graphics chip below its minimum (off by
+  default).
+
+### Changed
+- Builder (Windows x64 and ARM64): makes the menu fonts, the controller glyphs, the tile pictures and the Select / Back
+  sounds from your discs and puts them into the package.
+- Game library v1922.
+
+### Removed
+- The frame-rate counter (it is never shown, and any switch for it left by an older version is removed).
+
+### Fixed
+- Touch controls (single-screen app): the left stick no longer stays on screen after you lift your finger, open the side
+  menu or switch controllers.
+- Tile captions always fit inside their tiles.
+
+### Known issues
+- The other menu sounds (moving up and down or left and right, and the error sound) are not there yet: the game's one-time
+  recording of them does not finish on a fresh install. The menus stay silent for those.
+
 ## [1.1.5] - unreleased
 
 The first update. The new features need game code made with this version's builder: rebuild your package (Android) or

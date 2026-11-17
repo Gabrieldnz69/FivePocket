@@ -24,7 +24,7 @@ final class SettingsPages {
      */
     private static final String[][] ORDER = shown(new String[][] {
             {SettingsSchema.SCALER, SettingsSchema.FSR_SHARPNESS, SettingsSchema.RENDER_SCALE, SettingsSchema.SCREEN_FILL},
-            {SettingsSchema.FRAME_CAP, SettingsSchema.FRAME_GENERATION, SettingsSchema.FPS_OVERLAY},
+            {SettingsSchema.FRAME_CAP, SettingsSchema.FRAME_GENERATION},   // (1.2.0, owner: no frame-rate counter)
             {SettingsSchema.WORLD_TRAFFIC, SettingsSchema.WORLD_PEDESTRIANS, SettingsSchema.WORLD_PARKED_CARS,
                     SettingsSchema.WORLD_SCENARIO_PEDESTRIANS, SettingsSchema.WORLD_DRAW_DISTANCE, SettingsSchema.SCRIPT_MODS},
             {SettingsSchema.INPUT_UNBUFFERED, SettingsSchema.TOUCH_CONTROLS, SettingsSchema.TOUCH_KEEP, SettingsSchema.TOUCH_SIZE,

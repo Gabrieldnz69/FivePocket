@@ -120,6 +120,8 @@ final class AboutScreen {
     /** Update 1 Diagnostics: a copy is being made; the last copy's sentence (Diagnostics.DONE / failed), "" before the first. */
     private boolean copyingDiagnostics;
     private String diagnosticsResult = "";
+    /** v1302: the try-anyway switch's state (GpuSupport.tryAnyway), read when the screen is made and after each A. */
+    private boolean gpuTryAnyway;
     private List<String> lines;
     private int linesOf = -1, scrollOf, scroll;
 
@@ -129,6 +131,18 @@ final class AboutScreen {
         this.nav = nav;
         versionLine = versionLine(host.activity());
         nav.setColumnCount(ShellNav.ABOUT, ShellPages.ABOUT_SECTIONS.length);
+        gpuTryAnyway = GpuSupport.tryAnyway(host.filesDir());
+    }
+
+    boolean gpuTryAnyway() {
+        return gpuTryAnyway;
+    }
+
+    /** A on the Unsupported GPU section: turns the switch over and shows the state the file now has. */
+    void toggleGpuTryAnyway() {
+        gpuTryAnyway = GpuSupport.setTryAnyway(host.filesDir(), !gpuTryAnyway);
+        lines = null;
+        owner.render();
     }
 
     @SuppressWarnings("deprecation")   // versionCode is the field that exists before API 28
@@ -302,6 +316,7 @@ final class AboutScreen {
             case ShellPages.ABOUT_BUILD: return namesBlock.isEmpty() ? codeLine : codeLine + "\n\n" + namesBlock;
             case ShellPages.ABOUT_NOTICES: return Scene.reflow(ship ? licenceNoticesPlain() : licenceNotices());
             case ShellPages.ABOUT_CAPTURES: return captures;
+            case ShellPages.ABOUT_GPU_TRY: return GpuSupport.tryAnywayText(false);
             default: return ShellPages.TEXT_SELF_TEST;
         }
     }
@@ -393,9 +408,10 @@ final class AboutScreen {
             scroll = 0;
             scrollOf = section;
         }
-        if (lines == null || linesOf != section) {
+        if (lines == null || linesOf != section || section == ShellPages.ABOUT_GPU_TRY) {   // (the GPU section follows the check's answer)
             String text = section == ShellPages.ABOUT_DIAGNOSTICS
                     ? String.join("\n", Diagnostics.sectionLines(copyingDiagnostics ? "Copying\u2026" : diagnosticsResult))
+                    : section == ShellPages.ABOUT_GPU_TRY ? GpuSupport.status(owner.gpu()) + "\n\n" + GpuSupport.tryAnywayText(gpuTryAnyway)
                     : sectionText(section, versionLine, codeLine, namesBlock, ship, CaptureAbout.text(captures, copyingCaptures, captureResult));
             // Reworded before it is wrapped into lines: a phrase that ran over two lines could not be found afterwards.
             lines = MenuScenes.paneText(ship ? ShipWords.plain(text) : text, true, owner.measure());
@@ -408,6 +424,7 @@ final class AboutScreen {
     boolean enterable() {
         int section = nav.column(ShellNav.ABOUT);
         return section != ShellPages.ABOUT_SELF_TEST && section != ShellPages.ABOUT_CAPTURES && section != ShellPages.ABOUT_DIAGNOSTICS
+                && section != ShellPages.ABOUT_GPU_TRY
                 && ShellPages.aboutScrollable(lines().size());
     }
 
@@ -425,7 +442,7 @@ final class AboutScreen {
 
     void fill(MenuScenes.Page page) {
         List<String> shown = lines();
-        ShellPages.about(page, nav, shown, scroll, capturesToCopy());
+        ShellPages.about(page, nav, shown, scroll, capturesToCopy(), gpuTryAnyway);
     }
 
     /** Opens a second instance of the launcher activity in its old self-test mode; Back returns here. */

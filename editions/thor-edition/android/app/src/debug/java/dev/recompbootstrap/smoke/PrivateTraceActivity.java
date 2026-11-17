@@ -90,7 +90,7 @@ public final class PrivateTraceActivity extends Activity {
         sideMenuView=new SideMenuView(this,menus.main);
         sideMenuPad=new SideMenuPad(menus.main,PadGlue.timer(),this::menuChanged); // (Update 1 QoL)
         sideMenuView.source(surface); // (menu-redesign: the game's picture, blurred, behind the menu)
-        content.addView(new FpsLabelView(this),new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT)); // (v832: the small "60")
+        // (1.2.0, owner: "remove that ... fps counter": no frame-rate label)
         content.addView(sideMenuView,new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));
         final boolean inputOption=android.os.Build.VERSION.SDK_INT>=30;
         final ThorMenus m=menus;
@@ -143,7 +143,11 @@ public final class PrivateTraceActivity extends Activity {
      *  applied again (in a session Select goes to the game's own Interaction Menu). One JNI read of an atomic a second, UI thread only. */
     private boolean sessionUp;
     private final Runnable sessionWatch=new Runnable(){@Override public void run(){
-        final boolean s=MenuWords.localSession(trainerState());
+        final int state=trainerState();
+        // Update 1 Online mode: the controller's leave is done (bit 26): the game window closes and the launcher shows (the process ends
+        // as for any finished window, in onStop). Read once a second, like the session bit; never set outside Online mode.
+        if(MenuWords.onlineLeft(state)){Log.i(TAG,"ONLINE_LEAVE done: the game window closes, back to the launcher on Online");backToLauncher();finish();return;}
+        final boolean s=MenuWords.localSession(state);
         if(s!=sessionUp){sessionUp=s;holdSelectSetting();Log.i(TAG,"SIDE_MENU local session "+(s?"up: hold Select goes to the game's Interaction Menu":"down: hold Select opens the side menu again"));}
         mainThread.postDelayed(this,1000);
     }};
@@ -154,6 +158,16 @@ public final class PrivateTraceActivity extends Activity {
         capture.holdToOpen(MenuWords.holdOpensSideMenu(menus.rows.holdSelect,menus.rows.effectiveStyle(),trainerState()),()->{ // (+ main: a local session yields to the game)
             if(menus==null || menus.main.isOpen())return;
             Log.i(ThorMenus.TAG,"SIDE_MENU opened by holding Select");menus.main.openMenu();menuChanged();});
+    }
+
+    /** Update 1 Online mode (lead 2026-11-08: after the leave the Thor showed Android's home screen): the menu comes forward on the
+     *  Online tile (LaunchReturn). A failed start only logs: the window still closes. */
+    private void backToLauncher(){
+        try{
+            final android.content.Intent i=new android.content.Intent(this,BootstrapActivity.class);
+            i.putExtra(LaunchReturn.EXTRA,LaunchReturn.ONLINE);i.addFlags(LaunchReturn.FLAGS);startActivity(i);
+            Log.i(TAG,"ONLINE_LEAVE launcher brought forward on Online");
+        }catch(RuntimeException e){Log.w(TAG,"ONLINE_LEAVE launcher start failed: "+e);}
     }
     private void menuChanged(){
         if(menus==null)return;
@@ -185,7 +199,10 @@ public final class PrivateTraceActivity extends Activity {
     static native int myMusicState();
     private MyMusicPlayer music; // (Update 1 P6: null until the game window is set up for a game)
 
+    /** 2026-11-17: setup's menu-sound pass covers this window with its page and ends the game process (MenuSoundPassOverlay); null otherwise. */
+    private MenuSoundPassOverlay menuSoundPass;
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if(menuSoundPass!=null && menuSoundPass.key(event))return true;
         if(sideMenuKey(event))return true; // thor-radio v826: the side menu
         // Nothing runs that could want the button: B goes back to the launcher, as the window's text says.
         if(leaveWithB && event.getKeyCode()==KeyEvent.KEYCODE_BUTTON_B){if(event.getAction()==KeyEvent.ACTION_UP)finish();return true;}
@@ -204,6 +221,7 @@ public final class PrivateTraceActivity extends Activity {
     }
     private boolean touchpadNoted;
     @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if(menuSoundPass!=null)return true; // (the pass: the game gets no input)
         if(menus!=null && menus.main.isOpen() && (event.getSource()&InputDevice.SOURCE_JOYSTICK)==InputDevice.SOURCE_JOYSTICK){sideMenuHat(event);return true;} // (v826)
         return (gamepadInput!=null && gamepadInput.motion(event)) || super.dispatchGenericMotionEvent(event);
     }
@@ -382,7 +400,7 @@ public final class PrivateTraceActivity extends Activity {
             capture=CaptureController.attach(this,surface,content,e->gamepadInput!=null && gamepadInput.key(e));
             holdSelectSetting(); // (Update 1: hold Select opens the side menu, the side menu's own setting)
             mainThread.removeCallbacks(sessionWatch);mainThread.postDelayed(sessionWatch,1000); // (Update 1: a local session yields hold Select)
-            setContentView(content);fullPanel();
+            setContentView(content);fullPanel();if(gameRequested)menuSoundPass=MenuSoundPassOverlay.attach(this,content);
             if(gameRequested)secondScreen=SecondScreen.open(this); // hud2 (off unless its settings file says "hud")
             show(liveRequested?"WAITING_FOR_NATIVE_SWAP_SURFACE":"WAITING_FOR_STOPPED_PREVIEW_SURFACE");
         }else startRunner.run();

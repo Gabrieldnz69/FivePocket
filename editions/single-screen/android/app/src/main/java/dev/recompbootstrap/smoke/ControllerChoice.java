@@ -8,7 +8,8 @@ package dev.recompbootstrap.smoke;
  * buttons (a DualShock is listed as two or three devices: the pad, its touchpad, on some systems its motion sensors).
  *
  * The rule now: the controller that was last given a button press plays. With nothing chosen yet, the best listed
- * device is taken: a built-in pad, else a device with gamepad buttons, else any joystick.
+ * device is taken: a built-in pad, else a device with gamepad buttons. (touch-120, 2026-11-16: a joystick without gamepad buttons is
+ * no longer taken on its own; it plays from its first gamepad-button press.)
  */
 final class ControllerChoice {
     static final int NONE = -1;
@@ -30,6 +31,10 @@ final class ControllerChoice {
         for (int i = 0; i < ids.length; ++i) {
             if (ranks[i] <= 0 || ids[i] < 0) continue;
             if (ids[i] == current) return current;
+            // touch-120 (2026-11-16): a joystick without a pad's buttons is never taken on its own. Phones list such devices (shoulder
+            // keys of gaming phones, sensor hubs); taken, one hid the touch controls at start and its resting axes replaced the touch
+            // sticks. It becomes the player's controller on its first gamepad-button press instead (adopts()).
+            if (ranks[i] < 2) continue;
             if (ranks[i] > bestRank) {
                 best = ids[i];
                 bestRank = ranks[i];

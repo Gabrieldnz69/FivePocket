@@ -110,10 +110,16 @@ final class ShellPages {
         int item = playItem(nav.column(ShellNav.PLAY), menu);
         page.column = new String[order.length];
         page.columnEnabled = new boolean[order.length];
+        page.columnArt = new String[order.length];
+        page.columnLocked = new boolean[order.length];
         page.columnSelected = 0;
         for (int i = 0; i < order.length; i++) {
             page.column[i] = Scene.titleCase(menu.label(order[i]));
             page.columnEnabled[i] = menu.enabled(order[i]);
+            page.columnLocked[i] = menu.locked(order[i]);
+            page.columnArt[i] = order[i] == LauncherMenu.ONLINE ? UiAssets.TILE_ONLINE : order[i] == LauncherMenu.SANDBOX ? UiAssets.TILE_SANDBOX
+                    : order[i] == LauncherMenu.VERIFY ? UiAssets.TILE_VERIFY : order[i] == LauncherMenu.IMPORT ? UiAssets.TILE_IMPORT   // (1.2.0: the owner's art)
+                    : UiAssets.TILE_STORY;
             if (order[i] == item) page.columnSelected = i;
         }
         page.columnLit = onItem;
@@ -127,7 +133,7 @@ final class ShellPages {
         } else if (item != LauncherMenu.PRIMARY && second != null) {
             page.info.add(new MenuScenes.Line(second, MenuScenes.TONE_NORMAL));   // "already running", "Checking game code…"
         }
-        if (item != LauncherMenu.PRIMARY) {   // (Sandbox or Online: what it is, or why it cannot be chosen yet)
+        if (item != LauncherMenu.PRIMARY) {   // (Sandbox, Online, Verify, Import: what it is, or why it cannot be chosen yet)
             String line = menu.secondLine(item);
             if (line != null) page.info.add(new MenuScenes.Line(line,
                     menu.enabled(item) ? MenuScenes.TONE_NORMAL : MenuScenes.TONE_WARNING));

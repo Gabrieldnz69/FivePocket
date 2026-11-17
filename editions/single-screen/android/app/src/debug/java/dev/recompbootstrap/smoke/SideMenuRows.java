@@ -38,20 +38,20 @@ final class SideMenuRows implements SideMenu.Rows {
     static final String[] TOGGLE_LABELS={"Invincible","Never Wanted","Infinite Ammo","Super Jump","Fast Run","Fast Swim","Freeze Time"};
 
     static final List<String> LIVE=Arrays.asList(SettingsSchema.SCALER,SettingsSchema.FSR_SHARPNESS,SettingsSchema.SCREEN_FILL,
-            SettingsSchema.FRAME_CAP,SettingsSchema.FRAME_GENERATION,SettingsSchema.FPS_OVERLAY,SettingsSchema.TOUCH_CONTROLS,
+            SettingsSchema.FRAME_CAP,SettingsSchema.FRAME_GENERATION,SettingsSchema.TOUCH_CONTROLS,
             SettingsSchema.TOUCH_KEEP,SettingsSchema.TOUCH_SIZE,SettingsSchema.TOUCH_OPACITY,SettingsSchema.TOUCH_LAYOUT,
             SettingsSchema.HAPTICS, // (Update 1 haptics: the game window applies it at once, SideMenuApply.Effects.hapticsChanged)
             SettingsSchema.MY_MUSIC,SettingsSchema.MY_MUSIC_VOLUME,SettingsSchema.MY_MUSIC_ORDER); // (Update 1 P6: applied by the app at once)
     /** The Settings tab's sections (menu-redesign: the launcher's categories), each with its settings in the launcher's order. */
     static final List<String> SET_DISPLAY=Arrays.asList(SettingsSchema.SCALER,SettingsSchema.FSR_SHARPNESS,SettingsSchema.RENDER_SCALE,
                     SettingsSchema.SCREEN_FILL),
-            SET_FRAME_RATE=Arrays.asList(SettingsSchema.FRAME_CAP,SettingsSchema.FRAME_GENERATION,SettingsSchema.FPS_OVERLAY),
+            SET_FRAME_RATE=Arrays.asList(SettingsSchema.FRAME_CAP,SettingsSchema.FRAME_GENERATION),
             SET_WORLD=Arrays.asList(SettingsSchema.WORLD_TRAFFIC,SettingsSchema.WORLD_PEDESTRIANS,SettingsSchema.WORLD_PARKED_CARS,
                     SettingsSchema.WORLD_SCENARIO_PEDESTRIANS,SettingsSchema.WORLD_DRAW_DISTANCE),
             SET_CONTROLS=Arrays.asList(SettingsSchema.INPUT_UNBUFFERED,SettingsSchema.HAPTICS);
     /** Every setting of the Settings tab (the tests check each is in one section). */
     static final List<String> SETTINGS=Arrays.asList(SettingsSchema.SCALER,SettingsSchema.FSR_SHARPNESS,SettingsSchema.RENDER_SCALE,
-            SettingsSchema.SCREEN_FILL,SettingsSchema.FRAME_CAP,SettingsSchema.FRAME_GENERATION,SettingsSchema.FPS_OVERLAY,
+            SettingsSchema.SCREEN_FILL,SettingsSchema.FRAME_CAP,SettingsSchema.FRAME_GENERATION,
             SettingsSchema.WORLD_TRAFFIC,SettingsSchema.WORLD_PEDESTRIANS,SettingsSchema.WORLD_PARKED_CARS,
             SettingsSchema.WORLD_SCENARIO_PEDESTRIANS,SettingsSchema.WORLD_DRAW_DISTANCE,SettingsSchema.INPUT_UNBUFFERED,SettingsSchema.HAPTICS);
     static final List<String> TOUCH=Arrays.asList(SettingsSchema.TOUCH_CONTROLS,SettingsSchema.TOUCH_LAYOUT,SettingsSchema.TOUCH_SIZE,
@@ -153,7 +153,9 @@ final class SideMenuRows implements SideMenu.Rows {
                 new SideMenu.Tab("Mods",new SideMenu.Page[]{SideMenu.Page.MODS},new String[]{"Script Mods"})));
         if(music!=null)tabs.add(new SideMenu.Tab("My Music",new SideMenu.Page[]{SideMenu.Page.MY_MUSIC},new String[]{"My Music"})); // (Update 1 P6)
         if(trainer!=null && trainer.present() && OnlineMenu.shown(trainer.state())) // (Update 1: Sandbox only; hidden in Story Mode)
-            tabs.add(new SideMenu.Tab("Online",new SideMenu.Page[]{SideMenu.Page.ON_CHARACTER,SideMenu.Page.ON_CREATOR,SideMenu.Page.ON_PLACES,
+            tabs.add(cashShown()?new SideMenu.Tab("Online",new SideMenu.Page[]{SideMenu.Page.ON_CHARACTER,SideMenu.Page.ON_CREATOR,SideMenu.Page.ON_PLACES,
+                    SideMenu.Page.ON_ACTIVITIES,SideMenu.Page.ON_CASH},new String[]{"Character","Creator","Places","Activities","Cash"}) // (2026-11-09: Add Cash)
+                    :new SideMenu.Tab("Online",new SideMenu.Page[]{SideMenu.Page.ON_CHARACTER,SideMenu.Page.ON_CREATOR,SideMenu.Page.ON_PLACES,
                     SideMenu.Page.ON_ACTIVITIES},new String[]{"Character","Creator","Places","Activities"}));
         return tabs;
     }
@@ -192,6 +194,7 @@ final class SideMenuRows implements SideMenu.Rows {
             case ON_CREATOR:if(onlineOn() && (trainer.state()&OnlineMenu.STATE_ONLINE_CHARACTER)!=0)l.addAll(online.creatorRows(capabilities.creatorMenu()));break;
             case ON_PLACES:if(onlineOn())l.addAll(online.placeRows());break;
             case ON_ACTIVITIES:if(onlineOn())l.addAll(online.activityRows(trainer));break;
+            case ON_CASH:if(cashShown())l.addAll(online.cashRows(trainer));break; // (2026-11-09: Add Cash, a local Online session only)
             default:break;
         }
         return l;
@@ -207,6 +210,7 @@ final class SideMenuRows implements SideMenu.Rows {
                 return trainerOn()?"":TEXT_TRAINER_OFF;
             case MODS:return trainer==null?"":modsText(trainer.mods());
             case MY_MUSIC:return music==null?"":music.info();
+            case ON_CASH:return cashShown()?"":TEXT_CASH_ONLINE; // (the page is listed only while shown; a stale page says why)
             case ON_CHARACTER:case ON_CREATOR:case ON_PLACES:case ON_ACTIVITIES:
                 if(!onlineOn())return trainer==null || !trainer.present()?TEXT_NOT_IN_BUILD:!OnlineMenu.shown(trainer.state())?TEXT_ONLINE_SANDBOX:TEXT_TRAINER_OFF;
                 if(page==SideMenu.Page.ON_CREATOR && (trainer.state()&OnlineMenu.STATE_ONLINE_CHARACTER)==0)return OnlineMenu.TEXT_NEEDS_CHARACTER;
@@ -322,4 +326,13 @@ final class SideMenuRows implements SideMenu.Rows {
         final int n=trainer==null?0:Math.max(0,trainer.count(list));
         for(int i=0;i<n;++i){final String label=trainer.label(list,i);l.add(SideMenu.Row.action(prefix+i,label==null?"?":label,help));}
     }
+
+    static final String TEXT_CASH_ONLINE="Add Cash is in Online mode.";
+    /** 2026-11-09: the Cash page - the Online tab's rows (trainer on, Sandbox), an Online character and a library with "add-cash".
+     *  (2026-11-12 qol25e: was "a local Online session (bit 24)"; bit 24 is StateRealMenuAvailable, set only while OUR launcher runs
+     *  am_pi_menu, so on the game's own route (freemode starts am_pi_menu itself; t-pad25 runs 2/3, frame b1-cash-main.jpg) it stayed 0 and
+     *  the page never showed. Bit 20 (StateOnlineCharacter: a freemode model is the player) is set in the session; the library's add-cash
+     *  still refuses outside a local session ("fail add-cash"), so the row can never act on Story or a dead session.) */
+    boolean cashShown(){final int s=trainer==null?-100:trainer.state();
+        return onlineOn() && s!=-100 && (s&OnlineMenu.STATE_ONLINE_CHARACTER)!=0 && OnlineMenu.cashAction(trainer)>=0;}
 }

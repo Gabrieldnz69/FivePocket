@@ -23,6 +23,14 @@ final class OnlineMenu {
     static final int ONLINE_CHARACTER=15,ONLINE_PLACE=16,CHARACTER_LOOK=17,CHARACTER_EDIT=18,ACTIVITY=19;
     static final int STATE_ONLINE_CHARACTER=1<<20,STATE_SANDBOX=1<<21;
     static final int LIST_ACTIVITIES=8;
+    /** Add Cash (lead 2026-11-09, the owner: "why not give an add money option to the trainer?"; the library side is trainer-mods'
+     *  v1153: NETWORK_EARN_FROM_ROCKSTAR(a0)). The action is found by its name in the library's action list (trainer.h List Actions = 4,
+     *  actionName "add-cash"), so a library without it never shows a dead row, whatever number it has. a0 = the amount in dollars.
+     *  Shown only in a local Online session (MenuWords.STATE_LOCAL_SESSION, bit 24) with the trainer on. */
+    static final int LIST_ACTIONS=4;
+    static final String CASH_ACTION_NAME="add-cash";
+    static final int[] CASH_AMOUNTS={10_000,100_000,1_000_000};
+    static final String TEXT_CASH_NEEDS_SESSION="Add Cash works in Online mode only.";
     static final int LOOK_SAVED=0,LOOK_SAVE=1,LOOK_DISCARD=2,LOOK_EDIT=3,LOOK_MENU=4; // (4: the in-game creator, creator_menu.h OpenMenuOp)
     /** character_creator.h Field: OverlayBase 16 (+2 slot index, +1 opacity), PartBase 32 (+3 component), PropBase 72 (+2 anchor). */
     static final int OVERLAY_BASE=16,PART_BASE=32,PROP_BASE=72,FULL_OPACITY=1000,MAX_VALUE=254,NONE=0xFFFF;
@@ -69,6 +77,26 @@ final class OnlineMenu {
     static int encode(int field,int v){return (field<<16)|(v&0xFFFF);}
 
     static boolean shown(int state){return (state&STATE_SANDBOX)!=0;}
+
+    // ------------------------------------------------------------------------------------------------ Add Cash
+    /** The library's number for "add-cash" (its index in the action list), or -1 when the installed game build has no such action. */
+    static int cashAction(SideMenuRows.Trainer t){
+        if(t==null || !t.present())return -1;
+        final int n=t.count(LIST_ACTIONS);
+        for(int i=0;i<n;++i)if(CASH_ACTION_NAME.equals(t.label(LIST_ACTIONS,i)))return i;
+        return -1;
+    }
+    /** "$100,000" (the game's own money format). */
+    static String dollars(int amount){return "$"+String.format(java.util.Locale.US,"%,d",amount);}
+    private int cashAction=-1; // (looked up when the Cash rows are built; the request uses the number the rows were built with)
+    List<SideMenu.Row> cashRows(SideMenuRows.Trainer t){
+        cashAction=cashAction(t);
+        final List<SideMenu.Row> l=new ArrayList<>();
+        if(cashAction<0)return l;
+        for(int i=0;i<CASH_AMOUNTS.length;++i)
+            l.add(SideMenu.Row.action("on:cash:"+i,"Add "+dollars(CASH_AMOUNTS[i]),"Adds "+dollars(CASH_AMOUNTS[i])+" to your bank now. Shops take it from the bank."));
+        return l;
+    }
 
     // ------------------------------------------------------------------------------------------------ rows
     static final String TEXT_NEEDS_CHARACTER="Switch to an online character under Character first.";
@@ -151,6 +179,7 @@ final class OnlineMenu {
             case "on:look":if(n>=LOOK_SAVE && n<=LOOK_MENU){out.add(new int[]{CHARACTER_LOOK,n,0});if(n!=LOOK_SAVE)reset();}break; // (0: no row; afterSwitch)
             case "on:place":if(n>=0 && n<PLACES.length)out.add(new int[]{ONLINE_PLACE,n,0});break;
             case "on:act":if(n>=0){out.add(new int[]{ACTIVITY,n,0});activity=n;}break;
+            case "on:cash":if(cashAction>=0 && n>=0 && n<CASH_AMOUNTS.length)out.add(new int[]{cashAction,CASH_AMOUNTS[n],0});break;
             default:break;
         }
         return out;
@@ -161,6 +190,23 @@ final class OnlineMenu {
     /** What recomp_trainer_v1 returned for a request of row id: a 15 0 / 15 1 switch is followed by the saved look (afterSwitch). */
     void sent(String id,int result){
         if("on:char:0".equals(id) || "on:char:1".equals(id) || "on:char:2".equals(id))switchSeq=result>=0 && !"on:char:2".equals(id)?result:-1;
+        if(id!=null && id.startsWith("on:cash:"))cashSeq=result>=0?result:-1;
+    }
+    // Add Cash's notice (trainer-mods 2026-11-09: NETWORK_EARN_FROM_ROCKSTAR posts no feed line that they can see; the app says it)
+    private int cashSeq=-1;
+    boolean cashPending(){return cashSeq>=0;}
+    /** "+$100,000" once the waited Add Cash request's own result is "ok add-cash <amount>" (the amount the library reports); null while
+     *  it runs; null and the wait ended when it failed or its line was replaced by a later request's. */
+    String cashDone(String raw){
+        if(cashSeq<0 || raw==null)return null;
+        final String[] w=raw.trim().split("\\s+");
+        if(w.length<3 || !w[0].startsWith("seq="))return null;
+        final int seq;try{seq=Integer.parseInt(w[0].substring(4));}catch(NumberFormatException no){return null;}
+        if(seq<cashSeq)return null;
+        final boolean ok=seq==cashSeq && w[1].equals("ok") && w[2].equals(CASH_ACTION_NAME) && w.length>=4;
+        cashSeq=-1;
+        if(!ok)return null;
+        try{return "+"+dollars(Integer.parseInt(w[3]))+" (bank)";}catch(NumberFormatException no){return null;} // (trainer-mods 2026-11-10: NETWORK_EARN_FROM_ROCKSTAR credits the bank; the HUD shows the wallet)
     }
     // The saved look on every switch to an online character (owner 2026-11-07). v963 puts it back after a respawn only (character_
     // creator.h noteRespawn): a 15 0 / 15 1 switch records its new ped as seen, so nothing re-applies it. Until the library does, the
@@ -190,6 +236,7 @@ final class OnlineMenu {
         final String[] w=raw.trim().split("\\s+");
         if(w.length<3 || !w[0].startsWith("seq="))return "";
         if(w[1].equals("fail") || w[1].equals("blocked")){
+            if(w[2].equals(CASH_ACTION_NAME))for(int i=3;i<w.length;++i)if(w[i].equals("needs-session"))return "Not done: "+TEXT_CASH_NEEDS_SESSION;
             for(int i=3;i<w.length;++i){final String why=reason(w[i]);if(why!=null)return "Not done: "+why;}
         }
         final String text=SideMenuRows.trainerStatusText(raw);

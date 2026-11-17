@@ -15,12 +15,14 @@ final class ShellPages {
     /** The title at the top left: the name of the game this private build runs, as plain text. */
     static final String TITLE = "FivePocket"; // owner 2026-10-25 (the project's name; was the game's title)
     static final String TEXT_PRIVATE_BUILD = "Private build", TEXT_NO_CONTROLLER = "No controller";
-    static final String[] ABOUT_SECTIONS = {"This App", "Game Build", "Licence Notices", "Graphics Self-Test", CaptureAbout.SECTION, "Diagnostics"};
-    static final int ABOUT_APP = 0, ABOUT_BUILD = 1, ABOUT_NOTICES = 2, ABOUT_SELF_TEST = 3, ABOUT_CAPTURES = 4, ABOUT_DIAGNOSTICS = 5;
+    static final String[] ABOUT_SECTIONS = {"This App", "Game Build", "Licence Notices", "Graphics Self-Test", CaptureAbout.SECTION, "Diagnostics", "Unsupported GPU"};
+    static final int ABOUT_APP = 0, ABOUT_BUILD = 1, ABOUT_NOTICES = 2, ABOUT_SELF_TEST = 3, ABOUT_CAPTURES = 4, ABOUT_DIAGNOSTICS = 5, ABOUT_GPU_TRY = 6;
     /** What A does on the Captures section while pictures wait to be copied. */
     static final String PROMPT_COPY = "Copy To Pictures";
     /** What A does on the Diagnostics section (Update 1: Diagnostics, the clipboard and the share sheet). */
     static final String PROMPT_DIAGNOSTICS = "Copy Diagnostics";
+    /** What A does on the Unsupported GPU section (v1302: GpuSupport's try-anyway switch). */
+    static final String PROMPT_TURN_ON = "Turn On", PROMPT_TURN_OFF = "Turn Off";
     static final String TEXT_SELF_TEST = "Opens a graphics test screen. Android's Back returns from it.";
     static final String LABEL_CONTROLLER_CHECK = "Controller Check";
     /** What B does while Play's "start anyway?" question is open. */
@@ -106,10 +108,16 @@ final class ShellPages {
         int item = playItem(nav.column(ShellNav.PLAY), menu);
         page.column = new String[order.length];
         page.columnEnabled = new boolean[order.length];
+        page.columnArt = new String[order.length];
+        page.columnLocked = new boolean[order.length];
         page.columnSelected = 0;
         for (int i = 0; i < order.length; i++) {
             page.column[i] = Scene.titleCase(menu.label(order[i]));
             page.columnEnabled[i] = menu.enabled(order[i]);
+            page.columnLocked[i] = menu.locked(order[i]);
+            page.columnArt[i] = order[i] == LauncherMenu.ONLINE ? UiAssets.TILE_ONLINE : order[i] == LauncherMenu.SANDBOX ? UiAssets.TILE_SANDBOX
+                    : order[i] == LauncherMenu.VERIFY ? UiAssets.TILE_VERIFY : order[i] == LauncherMenu.IMPORT ? UiAssets.TILE_IMPORT   // (1.2.0: the owner's art)
+                    : UiAssets.TILE_STORY;
             if (order[i] == item) page.columnSelected = i;
         }
         page.columnLit = onItem;
@@ -123,7 +131,7 @@ final class ShellPages {
         } else if (item != LauncherMenu.PRIMARY && second != null) {
             page.info.add(new MenuScenes.Line(second, MenuScenes.TONE_NORMAL));   // "already running", "Checking game code…"
         }
-        if (item != LauncherMenu.PRIMARY) {   // (Sandbox or Online: what it is, or why it cannot be chosen yet)
+        if (item != LauncherMenu.PRIMARY) {   // (Sandbox, Online, Verify, Import: what it is, or why it cannot be chosen yet)
             String line = menu.secondLine(item);
             if (line != null) page.info.add(new MenuScenes.Line(line,
                     menu.enabled(item) ? MenuScenes.TONE_NORMAL : MenuScenes.TONE_WARNING));
@@ -186,6 +194,11 @@ final class ShellPages {
 
     /** As above. capturesToCopy: A on the Captures section would copy pictures now (CaptureAbout.canCopy). */
     static void about(MenuScenes.Page page, ShellNav nav, List<String> lines, int scroll, boolean capturesToCopy) {
+        about(page, nav, lines, scroll, capturesToCopy, false);
+    }
+
+    /** As above. gpuTryAnyway: the try-anyway switch is on (the Unsupported GPU section's prompt turns it off). */
+    static void about(MenuScenes.Page page, ShellNav nav, List<String> lines, int scroll, boolean capturesToCopy, boolean gpuTryAnyway) {
         int level = nav.level(), section = nav.column(ShellNav.ABOUT);
         page.column = ABOUT_SECTIONS;
         page.columnSelected = section;
@@ -200,6 +213,8 @@ final class ShellPages {
             if (capturesToCopy) page.prompts.add(select(PROMPT_COPY));
         } else if (level == ShellNav.COLUMN && section == ABOUT_DIAGNOSTICS) {
             page.prompts.add(select(PROMPT_DIAGNOSTICS));
+        } else if (level == ShellNav.COLUMN && section == ABOUT_GPU_TRY) {
+            page.prompts.add(select(gpuTryAnyway ? PROMPT_TURN_OFF : PROMPT_TURN_ON));
         } else if (level == ShellNav.STRIP || (level == ShellNav.COLUMN && (section == ABOUT_SELF_TEST || aboutScrollable(lines.size())))) {
             page.prompts.add(select(SettingsPages.PROMPT_SELECT));
         }

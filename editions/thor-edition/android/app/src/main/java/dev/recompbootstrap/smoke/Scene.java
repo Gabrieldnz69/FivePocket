@@ -22,6 +22,10 @@ final class Scene {
      * points, stroke thick, square ends. RING: the outline of the circle in the box x, y, w, h, stroke thick.
      */
     static final int RECT = 0, DISC = 1, POLY = 2, TEXT = 3, BACKDROP = 4, FILL = 5, ROUND = 6, LINE = 7, RING = 8;
+    /** Menu revamp M3: one of the game's own controller glyphs (UiAssets.glyphFile name in text) scaled into the box x, y, w, h. */
+    static final int IMAGE = 9;
+    /** M6: a colour run over the box from color to color2; stroke 1 = left to right, else top to bottom. */
+    static final int GRADIENT = 10;
     static final int LEFT = 0, CENTER = 1, RIGHT = 2;
     /** Layers: what stands still, what fades in after another page came up (texts and bars of the pane), the alert. */
     static final int CHROME = 0, CONTENT = 1, ALERT = 2;
@@ -31,15 +35,51 @@ final class Scene {
      * heading word).
      */
     static final int REGULAR = 0, BOLD = 1, TITLE = 2, CAPS = 3, HEAVY = 4;
+    /**
+     * Menu revamp M2: the game's own face, Chalet London (the disc's $Font2), as the launcher imported it from the player's disc
+     * (files/ui/chalet-london.ttf, UiKit.Faces). Only the Enhanced frame uses it, with an exact (fractional) size; where the file is
+     * missing the painter draws REGULAR instead and the frame keeps its Nunito sizes (Measure.gameFont is then false).
+     */
+    static final int GAME = 5;
+    /** Menu revamp M6: the game's condensed face, Chalet Comprimé (the disc's $Font2_cond): the landing's title and tile captions (E-F2). */
+    static final int GAME_COND = 6;
 
     /** Width of a text in design pixels at a text size in design pixels, in one of the faces above. */
     interface Measure {
         float width(String text, int sizePx, int face);
+
+        /** The same at a fractional size (the game face's measured 19.4 px); a measure with whole sizes only scales its nearest one. */
+        default float width(String text, float sizePx, int face) {
+            int whole = Math.max(1, Math.round(sizePx));
+            return whole == sizePx ? width(text, whole, face) : width(text, whole, face) * sizePx / whole;
+        }
+
+        /** True when GAME draws the disc's own face (its file was imported), false when it would fall back to REGULAR. */
+        default boolean gameFont() {
+            return false;
+        }
+
+        /** True when the painter has the disc's loading-screen art for the backdrop (UiAssets.ART_FILE). */
+        default boolean hasArt() {
+            return false;
+        }
+
+        /** True when the painter has this picture of the player's disc (Scene.IMAGE: a glyph, the art, a tile's art). */
+        default boolean hasPicture(String file) {
+            return false;
+        }
+
+        /** True when the painter has the game's own glyph for this button letter ("A", "START": UiAssets.glyphFile). */
+        default boolean hasGlyph(String glyph) {
+            return false;
+        }
     }
 
     static final class Item {
         int type, layer, color, color2, size, align, face;
         float x, y, w, h, stroke;
+        /** A text's exact size in design pixels when it has one (textExact), else 0 and size holds it. */
+        float exact;
         String text;
         float[] points;
         /** A text with the soft shadow of MenuLayout.SHADOW under it: one that stands on the backdrop itself. */
@@ -94,6 +134,11 @@ final class Scene {
         add(BACKDROP, 0, 0, MenuLayout.W, MenuLayout.H, top).color2 = bottom;
     }
 
+    /** The disc's loading-screen art over the whole window, sharp and unshaded (the Enhanced main menu's backdrop). */
+    void backdropArt() {
+        add(BACKDROP, 0, 0, MenuLayout.W, MenuLayout.H, 0xFF000000).text = "art";
+    }
+
     void fill(int color) {
         add(FILL, 0, 0, MenuLayout.W, MenuLayout.H, color);
     }
@@ -131,6 +176,30 @@ final class Scene {
         item.face = face;
         item.align = align;
         item.shadow = shadow;
+    }
+
+    /** A colour run (GRADIENT) over the box. */
+    void gradient(float x, float y, float w, float h, int from, int to, boolean horizontal) {
+        Item item = add(GRADIENT, x, y, w, h, from);
+        item.color2 = to;
+        item.stroke = horizontal ? 1f : 0f;
+    }
+
+    /** A controller glyph (UiAssets.glyphFile name) drawn into the box. */
+    void image(String file, float x, float y, float w, float h) {
+        add(IMAGE, x, y, w, h, 0xFFFFFFFF).text = file;
+    }
+
+    /** A text at a fractional size (the game face's measured sizes); size keeps the nearest whole one. */
+    void textExact(String text, float x, float y, float w, float h, float size, int face, int align, int color) {
+        if (text == null || text.isEmpty()) return;
+        text(text, x, y, w, h, Math.max(1, Math.round(size)), face, align, color, false);
+        items.get(items.size() - 1).exact = size;
+    }
+
+    /** The size a painter or measure draws a text item at. */
+    static float sizeOf(Item item) {
+        return item.exact > 0f ? item.exact : item.size;
     }
 
     void hit(float x, float y, float w, float h, int id) {
@@ -171,7 +240,7 @@ final class Scene {
         return a.type == b.type && a.layer == b.layer && a.color == b.color && a.color2 == b.color2 && a.size == b.size
                 && a.align == b.align && a.face == b.face && a.shadow == b.shadow
                 && Float.compare(a.x, b.x) == 0 && Float.compare(a.y, b.y) == 0 && Float.compare(a.w, b.w) == 0
-                && Float.compare(a.h, b.h) == 0 && Float.compare(a.stroke, b.stroke) == 0
+                && Float.compare(a.h, b.h) == 0 && Float.compare(a.stroke, b.stroke) == 0 && Float.compare(a.exact, b.exact) == 0
                 && Objects.equals(a.text, b.text) && Arrays.equals(a.points, b.points);
     }
 
@@ -192,7 +261,7 @@ final class Scene {
     }
 
     /** The text itself when it fits into maxWidth, else its longest beginning that fits with an ellipsis at the end. */
-    static String fit(String text, int size, int face, float maxWidth, Measure measure) {
+    static String fit(String text, float size, int face, float maxWidth, Measure measure) {
         if (text == null) return "";
         if (measure.width(text, size, face) <= maxWidth) return text;
         int end = text.length();
@@ -227,7 +296,7 @@ final class Scene {
      * line stays an empty line); otherwise lines break at spaces, and a single word wider than a line is cut.
      * Leading spaces of a paragraph are kept (the licence texts indent with them).
      */
-    static List<String> wrap(String text, int size, int face, float maxWidth, Measure measure) {
+    static List<String> wrap(String text, float size, int face, float maxWidth, Measure measure) {
         List<String> lines = new ArrayList<String>();
         if (text == null) return lines;
         for (String paragraph : text.split("\n", -1)) {

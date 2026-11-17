@@ -27,6 +27,11 @@ final class MenuWords {
         return holdSelect == HOLD_ON && effectiveStyle == STYLE_FIVEPOCKET && !localSession(trainerState);
     }
     static boolean localSession(int trainerState) { return trainerState != -100 && (trainerState & STATE_LOCAL_SESSION) != 0; }
+    /** Online mode leave (ONLINE-MODE-SPEC §1.6; proposed to trainer-mods as recomp_trainer_state_v1 bit 26): the OnlineMode controller has
+     *  finished its leave (clouds up, the session closed, nothing half saved); the game window then closes, back to the launcher. A
+     *  library without Online mode never sets it. trainerState -100 = no trainer. */
+    static final int STATE_ONLINE_LEFT = 1 << 26;
+    static boolean onlineLeft(int trainerState) { return trainerState != -100 && (trainerState & STATE_ONLINE_LEFT) != 0; }
     /** recomp_imenu_v1 ops: 3 style FivePocket (the library's hold-Back opener off), 4 style Interaction Menu (on). */
     static final int IMENU_OP_FIVEPOCKET = 3, IMENU_OP_INTERACTION = 4;
 

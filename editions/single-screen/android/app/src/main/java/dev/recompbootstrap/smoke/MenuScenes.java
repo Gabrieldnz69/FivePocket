@@ -92,6 +92,10 @@ final class MenuScenes {
         /** null: no column, the pane takes the whole block. */
         String[] column;
         boolean[] columnEnabled;
+        /** M6: each column item's tile art on the landing (UiAssets.TILE_*), or null. */
+        String[] columnArt;
+        /** 1.2.0 (owner: a padlock over what is locked until the game is set up): per column item, drawn dimmed with a padlock. */
+        boolean[] columnLocked;
         int[] columnMarks;
         int columnSelected;
         /** The selected column item is a light bar: the highlight is on it or further in, on a row of its pane. */

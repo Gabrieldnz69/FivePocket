@@ -203,6 +203,10 @@ final class SetupDiscScreen implements Screen {
                 break;
             case SetupDiscModel.ACT_LEAVE:
                 host.pop();
+                // 2026-11-17 (owner: no silent first menu): setup's last step, when the game library can record its menu sounds
+                if (model.finishReady() && MenuSoundsPrep.found(host.filesDir()) < MenuSounds.FILES.length) {   // (whether the game code records: the step looks, off the UI thread)
+                    host.push(new MenuSoundsScreen());
+                }
                 break;
             default:
                 break;
@@ -488,7 +492,7 @@ final class SetupDiscScreen implements Screen {
 
     private void render() {
         if (root == null) return;
-        root.show(MenuScenes.build(SetupDiscPage.page(model), root));
+        root.show(EnhancedScenes.build(SetupDiscPage.page(model), root));   // (2026-11-17: the Enhanced frame, SPEC §125)
         root.setKeepScreenOn(model.copyingRow() >= 0);   // a long copy must not be cut short by the screen timeout
     }
 }

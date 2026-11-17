@@ -236,7 +236,7 @@ final class RuntimeMapping {
         }
 
         if (capabilities.reads(FPS_OVERLAY)) {
-            want.put(FPS_OVERLAY, capabilities.effective(SettingsSchema.FPS_OVERLAY, settings.get(SettingsSchema.FPS_OVERLAY)) == 1 ? SWITCH : null);
+            want.put(FPS_OVERLAY, null);   // (1.2.0, owner: "remove that ... fps counter": the library's counter switch is never written, and removed)
         }
 
         // World sliders. Every slider at the original is "no file": the game then stores nothing at all. The
@@ -345,7 +345,7 @@ final class RuntimeMapping {
             settings = supported(settings, capabilities, SettingsSchema.FRAME_GENERATION, SettingsSchema.FG_BETWEEN);
         }
 
-        settings = supported(settings, capabilities, SettingsSchema.FPS_OVERLAY, on(files, capabilities, FPS_OVERLAY) ? 1 : 0);
+        settings = supported(settings, capabilities, SettingsSchema.FPS_OVERLAY, 0);   // (1.2.0, owner: no frame-rate counter: always off)
 
         if (on(files, capabilities, WORLD_LOAD_TXT)) {
             int[] world = parseWorld(content(files, WORLD_LOAD_TXT));

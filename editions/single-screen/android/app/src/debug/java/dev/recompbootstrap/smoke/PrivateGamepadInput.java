@@ -15,6 +15,7 @@ final class PrivateGamepadInput implements InputManager.InputDeviceListener {
     private static final String TAG="RecompNativeInput";
     private final InputManager manager;
     private final XboxGamepadMapper mapper=new XboxGamepadMapper();
+    private final KeyboardPad keyboard=new KeyboardPad(); // Discord item 10: a Bluetooth/USB keyboard plays as the pad (KeyboardPad's layout)
     private final PhysicalMotionLog motionLog=new PhysicalMotionLog(); // stick-only play leaves a line too, at most one in 5 s
     // Android sends no joystick event while no value changes (a stick held against its end stop): the line of a stick
     // that is held still is written by this timer, at the time PhysicalMotionLog names.
@@ -43,8 +44,8 @@ final class PrivateGamepadInput implements InputManager.InputDeviceListener {
     void onController(java.util.function.IntConsumer listener) {controllerListener=listener;if(listener!=null)listener.accept(deviceId);}
     String description() {return description;}
     String lastEvent() {return lastEvent;}
-    int[] physicalState() {return new int[]{mapper.physicalButtons(),mapper.physicalLeftTrigger(),mapper.physicalRightTrigger(),
-            mapper.leftX,mapper.leftY,mapper.rightX,mapper.rightY};}
+    int[] physicalState() {return keyboard.merge(new int[]{mapper.physicalButtons(),mapper.physicalLeftTrigger(),mapper.physicalRightTrigger(),
+            mapper.leftX,mapper.leftY,mapper.rightX,mapper.rightY});}
     private static boolean supported(InputDevice device) {
         return device!=null && !device.isVirtual() &&
                 (device.supportsSource(InputDevice.SOURCE_GAMEPAD) || device.supportsSource(InputDevice.SOURCE_JOYSTICK));
@@ -134,16 +135,19 @@ final class PrivateGamepadInput implements InputManager.InputDeviceListener {
         if(controllerListener!=null)controllerListener.accept(deviceId); // (upd1-wave3 android-dualsense: the rumble follows the playing controller)
         publish();
     }
-    void clear() {QolTouch.cancelAll();mapper.clear();motionLog.released();scheduleHeldCheck();lastEvent="Input released (focus/device change)";publish();}
+    void clear() {QolTouch.cancelAll();mapper.clear();keyboard.clear();motionLog.released();scheduleHeldCheck();lastEvent="Input released (focus/device change)";publish();}
     private void publish() {
         // qol-touch: the gestures' and the on-screen pad's inputs merged with the controller's (the controller wins input by input)
-        final int[] pad=QolTouch.merge(mapper.gameButtons(),mapper.leftTrigger(),mapper.rightTrigger(),mapper.leftX,mapper.leftY,mapper.rightX,mapper.rightY);
-        PrivateTraceActivity.updateGamepad(deviceId>=0 || QolTouch.padConnected(),pad[0],pad[1],pad[2],pad[3],pad[4],pad[5],pad[6]);
+        // Discord item 10: the keyboard counts as the physical controller (merged before the touch pad's arbitration)
+        final int[] k=keyboard.merge(new int[]{mapper.gameButtons(),mapper.leftTrigger(),mapper.rightTrigger(),mapper.leftX,mapper.leftY,mapper.rightX,mapper.rightY});
+        final int[] pad=QolTouch.merge(k[0],k[1],k[2],k[3],k[4],k[5],k[6]);
+        PrivateTraceActivity.updateGamepad(deviceId>=0 || QolTouch.padConnected() || keyboard.used(),pad[0],pad[1],pad[2],pad[3],pad[4],pad[5],pad[6]);
         if(observer!=null)observer.run();
     }
     boolean key(KeyEvent event) {
         // Test events never release a physically held button, and remain labelled synthetic.
         boolean injected=event.getDeviceId()==-1 && event.isFromSource(InputDevice.SOURCE_GAMEPAD);
+        if(!injected && keyboardKey(event))return true;
         // A button press on another connected controller makes that one the player's (a DualShock or an Xbox pad beside a
         // handheld's own pad, a pad that came back under a new number): the game is given it at rest, then this press.
         if(ControllerChoice.adopts(deviceId,event.getDeviceId(),supported(event.getDevice()),gamepadButton(event.getKeyCode()),
@@ -153,6 +157,21 @@ final class PrivateGamepadInput implements InputManager.InputDeviceListener {
         if(!mapper.key(event.getKeyCode(),event.getAction()==KeyEvent.ACTION_DOWN,injected))return false;
         lastEvent=(injected?"SYNTHETIC":"PHYSICAL")+" "+KeyEvent.keyCodeToString(event.getKeyCode())+
                 (event.getAction()==KeyEvent.ACTION_DOWN?" down":" up");
+        if(event.getRepeatCount()==0)Log.i(TAG,lastEvent);
+        publish();return true;
+    }
+    /** Discord item 10: a key of a real keyboard (KeyboardPad.keyboard) in KeyboardPad's layout; other keys are left to Android. */
+    private boolean keyboardKey(KeyEvent event) {
+        final InputDevice device=event.getDevice();
+        if(device==null || !KeyboardPad.keyboard(device.isVirtual(),device.getKeyboardType()==InputDevice.KEYBOARD_TYPE_ALPHABETIC,supported(device)))return false;
+        if(event.getAction()!=KeyEvent.ACTION_DOWN && event.getAction()!=KeyEvent.ACTION_UP)return false;
+        final boolean first=!keyboard.used();
+        if(!keyboard.key(event.getKeyCode(),event.getAction()==KeyEvent.ACTION_DOWN))return false;
+        if(first) { // no controller and no touch pad: the game is given a pad with every 360 input (as the touch pad does)
+            if(deviceId<0 && !QolTouch.padConnected())PrivateTraceActivity.updateGamepadCapabilities(0xF3FF,15,3);
+            Log.i(TAG,"KEYBOARD plays as the controller: "+device.getName());
+        }
+        lastEvent="PHYSICAL keyboard "+KeyEvent.keyCodeToString(event.getKeyCode())+(event.getAction()==KeyEvent.ACTION_DOWN?" down":" up");
         if(event.getRepeatCount()==0)Log.i(TAG,lastEvent);
         publish();return true;
     }

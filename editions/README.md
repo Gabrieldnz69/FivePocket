@@ -4,8 +4,8 @@ The two Android apps are built from these two trees, in full:
 
 | Published app | Built from | classes.dex (sha256) |
 |---|---|---|
-| FivePocket-Thor-Edition-1.1.5.apk (FivePocket Thor Edition) | `editions/thor-edition/` | 901f675cc48c... |
-| FivePocket-1.1.5.apk (FivePocket, single screen) | `editions/single-screen/` | acebd4d3ffbb... |
+| FivePocket-Thor-Edition-1.2.0.apk (FivePocket Thor Edition) | `editions/thor-edition/` | e0dc9a4c362b... |
+| FivePocket-1.2.0.apk (FivePocket, single screen) | `editions/single-screen/` | 04842ac88cd2... |
 
 Each tree, built with the command below, gives a classes.dex byte-identical to the published app's, the same resources, manifest
 and assets, and native libraries equal in every loaded section (only the build-id note, which records the build folder, differs).

@@ -35,10 +35,31 @@ final class TouchPadView extends View {
     @Override public boolean onTouchEvent(android.view.MotionEvent e){return false;} // (QolTouch routes the touches)
     @Override protected void onSizeChanged(int w,int h,int ow,int oh){
         pad.view(w,h,getResources().getDisplayMetrics().xdpi/25.4f);
+        exclusion();
+    }
+    // touch-120 (2026-11-16): keep Android's edge Back gesture off the lower right edge while the touch controls are on
+    // (TouchPad.rightEdgeExclusion); re-sent only when the strip changes (the controls turned on / off, a new size).
+    private String exclusionKey="";
+    private void exclusion(){
+        if(android.os.Build.VERSION.SDK_INT<29)return;
+        final float[] r=pad.rightEdgeExclusion(dp);
+        final String key=r==null?"none":(Math.round(r[0])+","+Math.round(r[1])+","+Math.round(r[2])+","+Math.round(r[3]));
+        if(key.equals(exclusionKey))return;
+        exclusionKey=key;
+        final java.util.List<android.graphics.Rect> rects=new java.util.ArrayList<>();
+        if(r!=null)rects.add(new android.graphics.Rect(Math.round(r[0]),Math.round(r[1]),Math.round(r[2]),Math.round(r[3])));
+        setSystemGestureExclusionRects(rects);
+        android.util.Log.i("RecompQolTouch","TOUCH_EDGE_EXCLUSION "+key);
     }
     private static int alpha(int argb,float a){return (Math.round(((argb>>>24)&0xFF)*Math.max(0f,Math.min(1f,a)))<<24)|(argb&0xFFFFFF);}
     @Override protected void onDraw(Canvas c){
-        final long t=SystemClock.uptimeMillis();
+        final long started=System.nanoTime();
+        try{paint(c,SystemClock.uptimeMillis());}
+        finally{QolTouch.drawUs.add((System.nanoTime()-started)/1000);}
+    }
+    private long idlePostedFor=Long.MIN_VALUE;
+    private void paint(Canvas c,final long t){
+        exclusion(); // (touch-120: a settings change can turn the controls on / off)
         final float a=pad.alpha(t);
         if(a>0.01f){
             for(TouchPad.Control k:pad.controls())if(!pad.userHidden() || k.kind==TouchPad.Kind.HIDE)drawControl(c,k,pad.userHidden()?Math.max(a,0.5f):a,t);
@@ -46,6 +67,10 @@ final class TouchPadView extends View {
                 drawStick(c,0,a,t);if(pad.rightRingDrawn())drawStick(c,1,a,t);} // (rswipe / a swipe camera: no ring)
         }
         if(pad.animating(t))postInvalidateOnAnimation();
+        else { // jank-1117: draw the idle fade when it begins (TouchPad.idleFadeAt), not at the next unrelated redraw
+            final long at=pad.idleFadeAt();
+            if(at!=Long.MAX_VALUE && at>t && at!=idlePostedFor){idlePostedFor=at;postInvalidateDelayed(at-t+1);}
+        }
     }
     private void drawControl(Canvas c,TouchPad.Control k,float a,long t){
         final boolean held=pad.held(k);

@@ -112,6 +112,7 @@ final class MenuModel {
         String title = null;
         for (SettingSpec spec : SettingsSchema.all()) {
             if (MyMusicSettings.hiddenRow(spec.key)) continue;   // (Update 1: My Music waits for E-SR1)
+            if (SettingsSchema.FPS_OVERLAY.equals(spec.key)) continue;   // (1.2.0, owner: no frame-rate counter row)
             if (!spec.group.equals(title)) {
                 group++;
                 title = spec.group;

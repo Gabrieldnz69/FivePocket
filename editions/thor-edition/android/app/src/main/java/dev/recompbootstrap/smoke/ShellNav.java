@@ -128,6 +128,31 @@ final class ShellNav {
     }
 
     /**
+     * Update 1 Online mode (LaunchReturn): a return from the game window shows this tab with the highlight on a column item,
+     * off the tab strip and out of any pane; a tab change waiting for an answer is dropped.
+     */
+    void show(int ofTab, int columnItem) {
+        tab = ofTab;
+        onStrip = false;
+        pendingTab = -1;
+        pendingStrip = false;
+        place(ofTab, columnItem, false);
+    }
+
+    /**
+     * Touch on the launcher's Play landing (2026-11-08, owner via lead: "tapping a tile still starts it directly"): a tap on a tile
+     * highlights it and is A at once (ACTIVATE), from the tab strip too. The tiles are large; the slim rows elsewhere keep tapColumn.
+     */
+    int tapTile(int item) {
+        wentToStrip = false;
+        if (item < 0 || item >= columnCount[tab]) return NOTHING;
+        onStrip = false;
+        inPane[tab] = false;
+        column[tab] = item;
+        return ACTIVATE;
+    }
+
+    /**
      * The page put the highlight on a row of a column item's pane (a tapped row, a question that ends on the Save
      * row). On the tab that is shown it is then no longer on the tab strip either.
      */

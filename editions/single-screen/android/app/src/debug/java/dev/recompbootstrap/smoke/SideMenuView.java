@@ -97,7 +97,7 @@ final class SideMenuView extends View {
         c.drawRect(ox+(ALERT_RULE_X0-4f)*s,oy+(ALERT_RULE_Y-3f)*s,ox+(ALERT_RULE_X1+4f)*s,oy+(ALERT_RULE_Y+ALERT_RULE_H+3f)*s,fill);
         fill.setColor(0xFFFFFFFF);
         c.drawRect(ox+ALERT_RULE_X0*s,oy+(ALERT_RULE_Y+ALERT_RULE_DY)*s,ox+ALERT_RULE_X1*s,oy+(ALERT_RULE_Y+ALERT_RULE_DY+ALERT_RULE_H)*s,fill);
-        text.setTypeface(UiKit.Faces.get(getContext()).regular);
+        text.setTypeface(UiKit.Faces.get(getContext()).of(Scene.REGULAR));
         text.setTextSize(ALERT_TEXT_PX*s);text.setColor(0xFFFFFFFF);text.setTextAlign(Paint.Align.CENTER);
         c.drawText(SideMenu.ALERT_TEXT,ox+960f*s,oy+(586f+26f+ALERT_TEXT_PX*0.72f)*s,text);
         return true;

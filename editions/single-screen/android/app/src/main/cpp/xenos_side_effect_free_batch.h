@@ -16,7 +16,7 @@ namespace recomp::gpu {
 // shader-content guessing. Fails closed on anything it cannot prove safe: an
 // unrecognized opcode, or a write to any register outside the small, closed
 // allowlist below, rejects the entire batch, never just the one packet.
-// CORRECTION (see the audit notes): an earlier version of this comment
+// CORRECTION (see docs/claude/Audit.md): an earlier version of this comment
 // claimed register writes "can never themselves write CPU-visible memory" and
 // therefore allowed all of them. That is false: the reference's own
 // WriteRegister shows a write to SCRATCH_REG0-7 performs a real memory store
