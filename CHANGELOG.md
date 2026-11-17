@@ -6,7 +6,8 @@ the source archive). Format: [Keep a Changelog](https://keepachangelog.com/); ve
 
 ## [1.2.0] - 2026-11-17
 
-Android (single-screen and Thor Edition) and the Windows builders. iOS 1.2.0 follows. The new features need game code made
+Android (single-screen and Thor Edition), the Windows builders and the Mac builder for iOS / Duo (new menus; Online
+next update). The new features need game code made
 with the 1.2.0 builder: rebuild your package from your discs.
 
 ### Added

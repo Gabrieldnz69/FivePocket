@@ -50,6 +50,12 @@ OWNER_APPROVED = {
     'trainer-open.m4a': 'ac27aa7487f92bcaeb7bf52de920c724ccf51cbeaf8ccc13bf4b84ecffd3eb16',
     'alert-restart.png': 'e7f40b2e6169f269dd2ebf31c24ff52da0810956681e33876cd4ab1f06f41db8',   # owner-approved final art (2266x1275)
 }
+# 1.2.0 (owner, via the lead 2026-11-17): his own art for the launcher's Verify Game Data / Import Game Discs tiles (his art, not
+# disc-derived; Android ships the same files from assets/ui-own). Exactly these bytes, only at ui/ under the app files.
+OWNER_UI_APPROVED = {
+    'ui/tile-verify-data.png': '3eb443a2a7cf98e890d0d1e9407bc6330cc216de15e438b1599b511b2a8c0dd3',
+    'ui/tile-import-discs.png': '91ed0ff2b615261624040669e2eddf18f77f3b489e82b73949044462391224c7',
+}
 MEDIA = ('.png', '.jpg', '.jpeg', '.gif', '.heic', '.m4a', '.mp3', '.wav', '.caf', '.aiff')
 BUNDLE_ID = re.compile(r'^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$')
 SWITCH = b'1'
@@ -170,6 +176,12 @@ def build_app(executable: Path, app_files: Path, payload: Path, bundle_id: str, 
                 continue
             raise SystemExit(f'refused: {p.name} is not the owner-approved file (sha256 {got[:16]}, approved '
                              f'{OWNER_APPROVED[p.name][:16]})')
+        rel_ui = p.relative_to(app_files).as_posix()
+        if rel_ui in OWNER_UI_APPROVED:
+            got = hashlib.sha256(p.read_bytes()).hexdigest()
+            if got == OWNER_UI_APPROVED[rel_ui]:
+                continue
+            raise SystemExit(f'refused: {rel_ui} is not the owner-approved tile art (sha256 {got[:16]})')
         if p.name in REFUSED or p.suffix.lower() in MEDIA:
             raise SystemExit(f'refused: {p.name} is art or sound, which the app files must not carry')
     name = info['CFBundleExecutable']

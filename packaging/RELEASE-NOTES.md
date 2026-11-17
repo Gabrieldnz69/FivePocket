@@ -4,7 +4,8 @@
 FivePocket is a static recompilation with a new renderer, not an emulator. No game code, data or shaders are in any
 download: the FivePocket Builder makes everything from your own discs, on your own computer.
 
-This release is for Android (FivePocket and the Thor Edition) and the Windows builders. **iOS {version} follows.**
+This release is for Android (FivePocket and the Thor Edition), the Windows builders and the Mac builder for iOS and Duo.
+**iOS / Duo: new menus; Online next update.**
 
 **This update needs new game code.** Run the {version} builder on your discs again and import the new package; the
 {version} app accepts only a {version} package.
@@ -65,20 +66,23 @@ purchases kept after a restart). The full list is in CHANGELOG.md.
 |---|---|---|
 | **FivePocket** | Android 8.0+, arm64 + Vulkan, Snapdragon 8-class or better | `FivePocket-{version}-android.zip` + the builder |
 | **FivePocket Thor Edition** | AYN Thor (dual screen) | `FivePocket-Thor-Edition-{version}-android.zip` + the builder |
-| **FivePocket iOS / Duo** | iPhone / iPad / Duo | iOS {version} follows |
+| **FivePocket iOS** | iPhone / iPad, iOS 17.4+ (8 GB devices recommended) | `FivePocket-iOS-Builder-{version}-macos-arm64.zip`: the Mac builder makes the app; you sign it with your Apple ID |
+| **FivePocket Duo** | the Duo (iPhone19,4), iOS 27.2 tested | the same Mac builder; you sign it with your Apple ID |
 
-Builders: the Android editions build on Windows (x86-64, one builder per edition, or the Thor Edition on Windows on ARM).
+Builders: the Android editions build on Windows (x86-64, one builder per edition, or the Thor Edition on Windows on ARM);
+the iOS and Duo apps build on a Mac (Apple silicon, Xcode).
 
 ## Updating
 
-- Install the new app over the old one. **Do not uninstall first: uninstalling deletes your saves.** Rebuild your package
+- Android: install the new app over the old one. **Do not uninstall first: uninstalling deletes your saves.** Rebuild your package
   with the {version} builder; the {version} app accepts only the {version} package.
+- iOS and Duo: build and sign with the same bundle identifier as before; your imported files and saves stay.
 
 ## Before you start
 
 - You need your own Xbox 360 discs (Disc 1 and Disc 2) as images. FivePocket never downloads game files.
-- **Never share what you build** (disc images, the bundle, the .apk package you build, game files, saves). See LEGAL.md.
-- FivePocket is free and has no affiliation with the game's publisher or developer, Microsoft, Google or AYN.
+- **Never share what you build** (disc images, the bundle, the .apk / .ipa you build, game files, saves). See LEGAL.md.
+- FivePocket is free and has no affiliation with the game's publisher or developer, Microsoft, Apple, Google or AYN.
 
 Source: `FivePocket-{version}-source.tar.xz` (GPL-3.0-or-later). Checksums: `SHA256SUMS` and the table below.
 Community and help: the FivePocket Discord, https://discord.gg/mZvqCsxgxT
