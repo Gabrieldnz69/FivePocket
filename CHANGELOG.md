@@ -30,10 +30,8 @@ with the 1.2.0 builder: rebuild your package from your discs.
   sounds from your discs and puts them into the package.
 - Game library v1922.
 
-### Removed
-- The frame-rate counter (it is never shown, and any switch for it left by an older version is removed).
-
 ### Fixed
+- A leftover developer frame-rate readout could show up in the corner of the game. It no longer appears.
 - Touch controls (single-screen app): the left stick no longer stays on screen after you lift your finger, open the side
   menu or switch controllers.
 - Tile captions always fit inside their tiles.
