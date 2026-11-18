@@ -1,0 +1,4 @@
+{
+    global: recomp_run_private_trace_v1; recomp_run_private_trace_v2; recomp_run_private_trace_v3; recomp_run_private_trace_v4; recomp_run_private_trace_v5;
+    local: *;
+};
